@@ -21,7 +21,7 @@ from typing import Optional
 import cv2
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 from agent_controller import AgentController, TaskIntent
@@ -141,6 +141,11 @@ async def get_report(report_id: str):
     if not os.path.exists(pdf_path):
         raise HTTPException(status_code=404, detail="Report not found.")
     return FileResponse(pdf_path, media_type="application/pdf", filename=f"satquery_report_{report_id}.pdf")
+
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health")
