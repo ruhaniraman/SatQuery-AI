@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local dependencies & generated test outputs
+site-packages/
+wheels/
+analysis_outputs/
+demo_output/
+mock_*.png
+mock_*.pdf
+
