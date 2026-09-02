@@ -1,6 +1,7 @@
 import io
 import os
 import uuid
+import shutil
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
@@ -8,15 +9,22 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from pdf_report_generator import generate_pdf_report
+# Import your newly created local AI engine
+from single_image.single_image_vqa_engine import SingleImageSpecialist
 
 app = FastAPI(
-    title="Agentic AI Backend & Reporting Service",
+    title="SatQuery AI Backend & Reporting Service",
     version="1.0.0",
     description="FastAPI service for multi-modal agentic analysis and PDF report generation",
 )
 
-# In-memory session cache for demonstration (in production, use Redis or S3)
+# In-memory session cache for demonstration
 AUDIT_STORE: Dict[str, Dict[str, Any]] = {}
+
+# --- Initialize the AI Engine ---
+# This loads into your 6GB VRAM on startup so it doesn't have to reload for every request
+print("Booting up the Single-Image Specialist...")
+engine = SingleImageSpecialist(adapter_path="./models")
 
 
 # --- Schema Definitions ---
@@ -39,14 +47,18 @@ async def analyze(
     query: str = Form(..., description="Analytical query/prompt for the agent system"),
     images: List[UploadFile] = File(default=[], description="Up to 2 images (e.g. satellite, drone, or document scans)"),
 ):
-    # Validation: Maximum of 2 image files
     if len(images) > 2:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Maximum 2 images permitted. Received {len(images)}.",
         )
+    
+    if len(images) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least 1 image must be provided for analysis.",
+        )
 
-    # Validate image MIME types if files are provided
     processed_images_bytes: List[bytes] = []
     for img in images:
         if img.content_type not in ["image/jpeg", "image/png", "image/webp"]:
@@ -57,47 +69,51 @@ async def analyze(
         content = await img.read()
         processed_images_bytes.append(content)
 
-    # --- Simulated Agent Execution Pipeline ---
     session_id = str(uuid.uuid4())
+    temp_image_path = f"temp_{session_id}.jpg"
     
+    try:
+        # 1. Save the primary image temporarily to disk for the engine to read
+        with open(temp_image_path, "wb") as f:
+            f.write(processed_images_bytes[0])
+            
+        # 2. RUN REAL INFERENCE: Pass the image and query to your fine-tuned model
+        ai_answer = engine.analyze_image(temp_image_path, query)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Processing Error: {str(e)}")
+        
+    finally:
+        # 3. Clean up the temporary file immediately
+        if os.path.exists(temp_image_path):
+            os.remove(temp_image_path)
+
+    # --- Simulated Agent Execution Pipeline ---
+    # We will replace this with real orchestrator logic later
     agent_trace = {
         "pipeline_id": session_id,
-        "nodes_traversed": ["InputPreprocessor", "VisionExtractorNode", "ReasoningEngine", "VerifierNode"],
+        "nodes_traversed": ["InputPreprocessor", "SingleImageSpecialist", "VerifierNode"],
         "telemetry": {
-            "preprocessor_ms": 42.1,
-            "vision_model": "yolo-v11-aerial-finetuned",
-            "detected_targets": 3,
-            "bounding_boxes": [
-                {"box": [120, 85, 310, 240], "class": "excavator", "confidence": 0.94},
-                {"box": [400, 150, 520, 310], "class": "haul_truck", "confidence": 0.91},
-                {"box": [60, 310, 180, 420], "class": "stockpile", "confidence": 0.88},
-            ],
-            "reasoning_latency_ms": 312.4,
+            "model_used": "Qwen2-VL-2B-BigEarthNet-LoRA",
             "verifier_passed": True,
         },
     }
 
-    synthesized_answer = (
-        f"Analysis complete for query: '{query}'. Identified 3 industrial activity targets across "
-        f"{len(images)} provided inspection frame(s). Bounding coordinates confirmed high-density extraction activity "
-        f"with strict boundary compliance verified by the sub-agent audit chain."
-    )
-    confidence = 0.93
+    confidence = 0.93 # Placeholder until we implement confidence scoring
     visual_evidence_url = f"/reports/{session_id}/evidence.png"
     report_url = f"/reports/{session_id}/download"
 
     # Persist session data to allow instant PDF download
-    primary_image_bytes = processed_images_bytes[0] if processed_images_bytes else None
     AUDIT_STORE[session_id] = {
         "query": query,
-        "answer": synthesized_answer,
+        "answer": ai_answer, # Using the real AI output here!
         "confidence_score": confidence,
         "agent_execution_trace": agent_trace,
-        "image_bytes": primary_image_bytes,
+        "image_bytes": processed_images_bytes[0],
     }
 
     return AnalysisResponse(
-        answer=synthesized_answer,
+        answer=ai_answer,
         confidence_score=confidence,
         agent_execution_trace=agent_trace,
         visual_evidence_url=visual_evidence_url,
@@ -118,10 +134,8 @@ async def download_report(session_id: str):
             detail="Report session expired or does not exist.",
         )
 
-    # Convert stored image bytes to an in-memory buffer if present
     img_buffer = io.BytesIO(record["image_bytes"]) if record["image_bytes"] else None
 
-    # Generate the single-page PDF
     pdf_buffer = generate_pdf_report(
         query=record["query"],
         answer=record["answer"],
