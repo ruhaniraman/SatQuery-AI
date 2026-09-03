@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pdf_report_generator import generate_pdf_report
@@ -26,11 +27,16 @@ from geospatial_preprocessing.sar_preprocessor import apply_lee_filter
 from agent_manager.agent_controller import classify_query, validate_inputs
 from agent_manager.schemas import ImageInput, TaskType
 
+from fusion.sar_optical_fusion import execute_optical_sar_fusion
+
 app = FastAPI(
     title="SatQuery AI Backend & Reporting Service",
     version="1.0.0",
     description="FastAPI service for multi-modal agentic analysis and PDF report generation",
 )
+
+os.makedirs("reports", exist_ok=True)
+app.mount("/reports", StaticFiles(directory="reports"), name="reports")
 
 # In-memory session cache for demonstration
 AUDIT_STORE: Dict[str, Dict[str, Any]] = {}
@@ -222,6 +228,15 @@ async def analyze(
             # Extract the data Member 3's engine generated
             ai_answer = cd_result.explanation
             confidence = cd_result.confidence_score
+
+            session_folder = os.path.join("reports", session_id)
+            os.makedirs(session_folder, exist_ok=True)
+            evidence_path = os.path.join(session_folder, "evidence.png")
+            if hasattr(cd_result, "change_mask") and cd_result.change_mask is not None:
+                cv2.imwrite(evidence_path, cd_result.change_mask)
+            else:
+                # Fallback save image B if mask is embedded differently
+                cv2.imwrite(evidence_path, cv2.cvtColor(img_b, cv2.COLOR_RGB2BGR))
             
             agent_trace = {
                 "pipeline_id": session_id,
@@ -231,7 +246,50 @@ async def analyze(
                     "severity": cd_result.overall_severity,
                     "ssim_score": round(cd_result.ssim_score, 4)
                 }
-            }   
+            }
+        elif task == TaskType.OPTICAL_SAR_FUSION:
+            print("Routing to Optical-SAR Fusion Specialist via Agent Manager...")
+            
+            original_names = [img.filename.upper() for img in images if img.filename]
+            sar_idx = 1 if ("SAR" in original_names[1] or "S1" in original_names[1]) else 0
+            opt_idx = 0 if sar_idx == 1 else 1
+            
+            sar_path = temp_paths[sar_idx]
+            opt_path = temp_paths[opt_idx]
+
+            is_geospatial = opt_path.lower().endswith('.tif')
+            if is_geospatial:
+                print("GeoTIFFs detected. Aligning SAR to Optical...")
+                aligned_sar_path = f"temp_aligned_fusion_{session_id}.tif"
+                match_and_align_geotiffs(opt_path, sar_path, aligned_sar_path)
+                
+                opt_array, _ = load_and_standardize_image(opt_path)
+                sar_array, _ = load_and_standardize_image(aligned_sar_path)
+                temp_paths.append(aligned_sar_path)
+            else:
+                opt_array = cv2.cvtColor(cv2.imread(opt_path), cv2.COLOR_BGR2RGB)
+                sar_array = cv2.imread(sar_path, cv2.IMREAD_GRAYSCALE)
+
+            fusion_result = execute_optical_sar_fusion(opt_array, sar_array, query)
+            composite_img = fusion_result["composite_image"]
+            specialized_prompt = fusion_result["generated_prompt"]
+            
+            print("Fusion complete. Passing False-Color Composite to VLM...")
+            
+            ai_answer = shared_vram_caller(specialized_prompt, composite_img, composite_img)
+            confidence = 0.92 
+            
+            # Save composite image as the visual evidence artifact
+            session_folder = os.path.join("reports", session_id)
+            os.makedirs(session_folder, exist_ok=True)
+            evidence_path = os.path.join(session_folder, "evidence.png")
+            cv2.imwrite(evidence_path, cv2.cvtColor(composite_img, cv2.COLOR_RGB2BGR))
+
+            agent_trace = {
+                "pipeline_id": session_id,
+                "nodes_traversed": ["AgentManager", "SpatialAlignment", "OpticalSARFusion", "Qwen2-VL-Bridge"],
+                "telemetry": {"fusion_mode": "False-Color Composite (R, G, SAR)"}
+            } 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Processing Error: {str(e)}")
         
