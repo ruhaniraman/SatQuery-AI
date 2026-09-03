@@ -117,7 +117,6 @@ async def analyze(
     try:
         # 1. Save ALL uploaded images temporarily
         for idx, (img_bytes, img_file) in enumerate(zip(processed_images_bytes, images)):
-            # Preserve the correct extension so rasterio doesn't crash!
             ext = ".tif" if img_file.filename.lower().endswith(('.tif', '.tiff')) else ".jpg"
             temp_path = f"temp_{session_id}_{idx}{ext}"
             with open(temp_path, "wb") as f:
