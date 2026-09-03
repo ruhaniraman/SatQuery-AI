@@ -1,9 +1,9 @@
-import SatQueryDashboard from './Dashboard';
+import SatQueryFrontend from './SatQueryFrontend';
 
 function App() {
   return (
-    <SatQueryDashboard />
-  )
+    <SatQueryFrontend />
+  );
 }
 
 export default App;
