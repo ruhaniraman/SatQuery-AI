@@ -21,7 +21,6 @@ from reportlab.platypus import (
 def generate_pdf_report(
     query: str,
     answer: str,
-    confidence_score: float,
     agent_execution_trace: Dict[str, Any],
     image_source: Optional[Any] = None,  # file path, bytes, or file-like object
     output_path: Optional[str] = None,
@@ -66,7 +65,7 @@ def generate_pdf_report(
     header_data = [
         [
             Paragraph("<b>AGENTIC AI SYSTEM</b><br/><font size=9 color='#2563EB'>Audit & Inspection Report</font>", styles["ReportTitle"]),
-            Paragraph(f"Generated: {timestamp}<br/>Confidence: <b>{confidence_score * 100:.1f}%</b><br/>Status: <b>VERIFIED</b>", styles["ReportMeta"]),
+            Paragraph(f"Generated: {timestamp}<br/>Status: <b>VERIFIED</b>", styles["ReportMeta"]),
         ]
     ]
     header_table = Table(header_data, colWidths=[3.2 * inch, 4.3 * inch])

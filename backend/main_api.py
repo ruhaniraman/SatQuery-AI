@@ -4,6 +4,7 @@ import uuid
 import shutil
 import cv2
 import torch
+import json
 import numpy as np
 from typing import Any, Dict, List, Optional
 
@@ -37,9 +38,6 @@ app = FastAPI(
 
 os.makedirs("reports", exist_ok=True)
 app.mount("/reports", StaticFiles(directory="reports"), name="reports")
-
-# In-memory session cache for demonstration
-AUDIT_STORE: Dict[str, Dict[str, Any]] = {}
 
 # --- Initialize the AI Engine ---
 # This loads into your 6GB VRAM on startup so it doesn't have to reload for every request
@@ -81,7 +79,6 @@ def shared_vram_caller(prompt: str, img_a_np: np.ndarray, img_b_np: np.ndarray) 
 # --- Schema Definitions ---
 class AnalysisResponse(BaseModel):
     answer: str = Field(..., description="Synthesized analytical response from the AI agents")
-    confidence_score: float = Field(..., ge=0.0, le=1.0, description="Confidence rating between 0 and 1")
     agent_execution_trace: Dict[str, Any] = Field(..., description="Telemetry and reasoning steps of individual sub-agents")
     visual_evidence_url: str = Field(..., description="Endpoint or URL to retrieve the visual inspection artifact")
     report_download_url: Optional[str] = Field(None, description="Direct URL to download the single-page audit PDF")
@@ -159,7 +156,30 @@ async def analyze(
         # 3. --- TASK EXECUTION ROUTING ---
         if task == TaskType.SINGLE_IMAGE_VQA:
             print("Routing to Single-Image Specialist...")
-            # ... (Keep your existing single image code here) ...
+            # Load the single image for processing
+            single_img_path = temp_paths[0]
+            is_geospatial = single_img_path.lower().endswith('.tif')
+            
+            if is_geospatial:
+                img_array, _ = load_and_standardize_image(single_img_path)
+                # Save standard representation for rendering evidence view
+                evidence_img_path = os.path.join("reports", session_id, "evidence.png")
+                os.makedirs(os.path.dirname(evidence_img_path), exist_ok=True)
+                cv2.imwrite(evidence_img_path, cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+            else:
+                img_array = cv2.cvtColor(cv2.imread(single_img_path), cv2.COLOR_BGR2RGB)
+                # Copy directly as evidence artifact
+                evidence_img_path = os.path.join("reports", session_id, "evidence.png")
+                os.makedirs(os.path.dirname(evidence_img_path), exist_ok=True)
+                shutil.copy(single_img_path, evidence_img_path)
+
+            ai_answer = engine.analyze_image(single_img_path, query)
+            
+            agent_trace = {
+                "pipeline_id": session_id,
+                "nodes_traversed": ["AgentManager", "InputPreprocessor", "SingleImageSpecialist", "VerifierNode"],
+                "telemetry": {"model_used": "Qwen2-VL-2B-BigEarthNet-LoRA"}
+            }
             
         elif task == TaskType.CHANGE_DETECTION:
             print("Routing to CDVQA Specialist via Agent Manager...")
@@ -227,7 +247,6 @@ async def analyze(
             
             # Extract the data Member 3's engine generated
             ai_answer = cd_result.explanation
-            confidence = cd_result.confidence_score
 
             session_folder = os.path.join("reports", session_id)
             os.makedirs(session_folder, exist_ok=True)
@@ -277,7 +296,6 @@ async def analyze(
             print("Fusion complete. Passing False-Color Composite to VLM...")
             
             ai_answer = shared_vram_caller(specialized_prompt, composite_img, composite_img)
-            confidence = 0.92 
             
             # Save composite image as the visual evidence artifact
             session_folder = os.path.join("reports", session_id)
@@ -301,18 +319,44 @@ async def analyze(
     visual_evidence_url = f"/reports/{session_id}/evidence.png"
     report_url = f"/reports/{session_id}/download"
 
-    # Persist session data to allow instant PDF download
-    AUDIT_STORE[session_id] = {
+    # Ensure the session folder exists (in case it wasn't created earlier)
+    # Ensure the session folder exists
+    session_folder = os.path.join("reports", session_id)
+    os.makedirs(session_folder, exist_ok=True)
+
+    # 1. Save the metadata as JSON
+    record = {
         "query": query,
-        "answer": ai_answer, # Using the real AI output here!
-        "confidence_score": confidence,
+        "answer": ai_answer,
         "agent_execution_trace": agent_trace,
-        "image_bytes": processed_images_bytes[0],
     }
+    with open(os.path.join(session_folder, "data.json"), "w") as f:
+        json.dump(record, f)
+
+    # 2. Save the raw image bytes to disk
+    with open(os.path.join(session_folder, "source.img"), "wb") as f:
+        f.write(processed_images_bytes[0])
+
+    # 3. --- NEW: Generate and save the PDF report directly to disk ---
+    img_buffer = io.BytesIO(processed_images_bytes[0]) if processed_images_bytes else None
+    pdf_buffer = generate_pdf_report(
+        query=query,
+        answer=ai_answer,
+        agent_execution_trace=agent_trace,
+        image_source=img_buffer,
+    )
+    
+    pdf_buffer.seek(0)
+    report_path = os.path.join(session_folder, "report.pdf")
+    with open(report_path, "wb") as f:
+        f.write(pdf_buffer.read())
+
+    # Point the URL directly to the static PDF file
+    visual_evidence_url = f"/reports/{session_id}/evidence.png"
+    report_url = f"/reports/{session_id}/report.pdf"
 
     return AnalysisResponse(
         answer=ai_answer,
-        confidence_score=confidence,
         agent_execution_trace=agent_trace,
         visual_evidence_url=visual_evidence_url,
         report_download_url=report_url,
@@ -325,19 +369,29 @@ async def analyze(
     summary="Download the 1-page PDF audit report for a given analysis session",
 )
 async def download_report(session_id: str):
-    record = AUDIT_STORE.get(session_id)
-    if not record:
+    session_folder = os.path.join("reports", session_id)
+    json_path = os.path.join(session_folder, "data.json")
+    img_path = os.path.join(session_folder, "source.img")
+
+    if not os.path.exists(json_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Report session expired or does not exist.",
         )
 
-    img_buffer = io.BytesIO(record["image_bytes"]) if record["image_bytes"] else None
+    # Load metadata
+    with open(json_path, "r") as f:
+        record = json.load(f)
+
+    # Load image bytes
+    img_buffer = None
+    if os.path.exists(img_path):
+        with open(img_path, "rb") as f:
+            img_buffer = io.BytesIO(f.read())
 
     pdf_buffer = generate_pdf_report(
         query=record["query"],
         answer=record["answer"],
-        confidence_score=record["confidence_score"],
         agent_execution_trace=record["agent_execution_trace"],
         image_source=img_buffer,
     )
