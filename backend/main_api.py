@@ -2,6 +2,9 @@ import io
 import os
 import uuid
 import shutil
+import cv2
+import torch
+import numpy as np
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
@@ -11,6 +14,14 @@ from pydantic import BaseModel, Field
 from pdf_report_generator import generate_pdf_report
 # Import your newly created local AI engine
 from single_image.single_image_vqa_engine import SingleImageSpecialist
+
+from PIL import Image
+from change_detection.cdvqa_engine import ChangeDetectionEngine
+
+from geospatial_preprocessing.spatial_alignment import match_and_align_geotiffs
+from geospatial_preprocessing.geotiff_loader import load_and_standardize_image
+from geospatial_preprocessing.test_failures import check_bbox_overlap, validate_downstream_payload
+from geospatial_preprocessing.sar_preprocessor import apply_lee_filter
 
 app = FastAPI(
     title="SatQuery AI Backend & Reporting Service",
@@ -25,6 +36,37 @@ AUDIT_STORE: Dict[str, Dict[str, Any]] = {}
 # This loads into your 6GB VRAM on startup so it doesn't have to reload for every request
 print("Booting up the Single-Image Specialist...")
 engine = SingleImageSpecialist(adapter_path="./models")
+
+print("Initializing CDVQA Engine...")
+cd_engine = ChangeDetectionEngine()
+
+def shared_vram_caller(prompt: str, img_a_np: np.ndarray, img_b_np: np.ndarray) -> str:
+    """Forces Member 3's engine to use Member 1's already-loaded Qwen model!"""
+    print("VLM Bridge Activated: Processing multi-image prompt...")
+    
+    # Convert Member 3's OpenCV numpy arrays (BGR) to PIL Images (RGB)
+    pil_a = Image.fromarray(img_a_np)
+    pil_b = Image.fromarray(img_b_np)
+
+    # Format the prompt exactly how Qwen2-VL expects multiple images
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": pil_a},
+            {"type": "image", "image": pil_b},
+            {"type": "text", "text": prompt}
+        ]
+    }]
+
+    # Run inference using YOUR loaded engine
+    text = engine.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = engine.processor(text=[text], images=[pil_a, pil_b], padding=True, return_tensors="pt").to("cuda")
+
+    with torch.no_grad():
+        output_ids = engine.model.generate(**inputs, max_new_tokens=512)
+
+    generated_ids = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, output_ids)]
+    return engine.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
 
 # --- Schema Definitions ---
@@ -61,45 +103,124 @@ async def analyze(
 
     processed_images_bytes: List[bytes] = []
     for img in images:
-        if img.content_type not in ["image/jpeg", "image/png", "image/webp"]:
+        if img.content_type not in ["image/jpeg", "image/png", "image/webp", "image/tiff"]:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=f"Unsupported file format: {img.content_type}. Use JPEG, PNG, or WebP.",
+                detail=f"Unsupported file format: {img.content_type}. Use JPEG, PNG, WebP, or TIFF.",
             )
         content = await img.read()
         processed_images_bytes.append(content)
 
     session_id = str(uuid.uuid4())
-    temp_image_path = f"temp_{session_id}.jpg"
+    temp_paths = []
     
     try:
-        # 1. Save the primary image temporarily to disk for the engine to read
-        with open(temp_image_path, "wb") as f:
-            f.write(processed_images_bytes[0])
+        # 1. Save ALL uploaded images temporarily
+        for idx, (img_bytes, img_file) in enumerate(zip(processed_images_bytes, images)):
+            # Preserve the correct extension so rasterio doesn't crash!
+            ext = ".tif" if img_file.filename.lower().endswith(('.tif', '.tiff')) else ".jpg"
+            temp_path = f"temp_{session_id}_{idx}{ext}"
+            with open(temp_path, "wb") as f:
+                f.write(img_bytes)
+            temp_paths.append(temp_path)
             
-        # 2. RUN REAL INFERENCE: Pass the image and query to your fine-tuned model
-        ai_answer = engine.analyze_image(temp_image_path, query)
-        
+        # 2. --- THE TEAM LEAD ROUTER ---
+        if len(temp_paths) == 1:
+            print("Routing to Single-Image Specialist...")
+            ai_answer = engine.analyze_image(temp_paths[0], query)
+            confidence = 0.93 # Placeholder for single images
+            
+            agent_trace = {
+                "pipeline_id": session_id,
+                "nodes_traversed": ["InputPreprocessor", "SingleImageSpecialist", "VerifierNode"],
+                "telemetry": {"model_used": "Qwen2-VL-2B-BigEarthNet-LoRA"}
+            }
+            
+        elif len(temp_paths) == 2:
+            print("Routing to CDVQA Specialist...")
+            
+            # Check if we are dealing with geospatial data
+            is_geospatial = temp_paths[0].lower().endswith('.tif')
+
+            if is_geospatial:
+                print("GeoTIFFs detected. Running fail-safes and Spatial Alignment...")
+                aligned_path = f"temp_aligned_{session_id}.tif"
+                
+                # 1. Peek at the metadata before aligning
+                _, meta_a = load_and_standardize_image(temp_paths[0])
+                _, meta_b_raw = load_and_standardize_image(temp_paths[1])
+
+                # 2. Check for physical overlap
+                if meta_a["bounds"] and meta_b_raw["bounds"]:
+                    if not check_bbox_overlap(meta_a["bounds"], meta_b_raw["bounds"]):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Images do not cover the same physical area. Alignment aborted."
+                        )
+
+                # 3. Align Image B to Image A
+                match_and_align_geotiffs(temp_paths[0], temp_paths[1], aligned_path)
+                
+                # 4. Load the final, aligned arrays
+                img_a, _ = load_and_standardize_image(temp_paths[0])
+                img_b, _ = load_and_standardize_image(aligned_path)
+                
+                temp_paths.append(aligned_path)
+            else:
+                print("Standard images detected. Skipping alignment...")
+                # Member 3's code expects OpenCV numpy arrays
+                img_a = cv2.cvtColor(cv2.imread(temp_paths[0]), cv2.COLOR_BGR2RGB)
+                img_b = cv2.cvtColor(cv2.imread(temp_paths[1]), cv2.COLOR_BGR2RGB)
+
+            # ---> NEW SAR DETECTION & LEE FILTER BLOCK <---
+            # Check the original uploaded filenames from the 'images' list
+            original_names = " ".join([img.filename.upper() for img in images if img.filename])
+            if "S1" in original_names or "SAR" in original_names:
+                print("SAR data detected! Applying Lee Filter...")
+                
+                # If it's a 3-channel image, apply the filter to each channel separately
+                if img_a.ndim == 3:
+                    img_a = np.dstack([apply_lee_filter(img_a[:, :, i]) for i in range(img_a.shape[2])])
+                    img_b = np.dstack([apply_lee_filter(img_b[:, :, i]) for i in range(img_b.shape[2])])
+                else:
+                    # If it's already a single-band SAR image, apply directly
+                    img_a = apply_lee_filter(img_a)
+                    img_b = apply_lee_filter(img_b)
+
+            if not validate_downstream_payload(img_a, img_b):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal pipeline error: Image array validation failed before AI processing."
+                )
+            # Pass the images AND our custom VRAM bridge function
+            cd_result = cd_engine.detect(
+                image_a=img_a,
+                image_b=img_b,
+                vlm_fn=shared_vram_caller,
+                user_query=query
+            )
+            
+            # Extract the data Member 3's engine generated
+            ai_answer = cd_result.explanation
+            confidence = cd_result.confidence_score
+            
+            agent_trace = {
+                "pipeline_id": session_id,
+                "nodes_traversed": ["InputPreprocessor", "ChangeMaskSegmenter", "ChangeMetrics", "Qwen2-VL-Bridge"],
+                "telemetry": {
+                    "change_percentage": round(cd_result.change_percentage, 2),
+                    "severity": cd_result.overall_severity,
+                    "ssim_score": round(cd_result.ssim_score, 4)
+                }
+            }   
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Processing Error: {str(e)}")
         
     finally:
-        # 3. Clean up the temporary file immediately
-        if os.path.exists(temp_image_path):
-            os.remove(temp_image_path)
-
-    # --- Simulated Agent Execution Pipeline ---
-    # We will replace this with real orchestrator logic later
-    agent_trace = {
-        "pipeline_id": session_id,
-        "nodes_traversed": ["InputPreprocessor", "SingleImageSpecialist", "VerifierNode"],
-        "telemetry": {
-            "model_used": "Qwen2-VL-2B-BigEarthNet-LoRA",
-            "verifier_passed": True,
-        },
-    }
-
-    confidence = 0.93 # Placeholder until we implement confidence scoring
+        # 3. Clean up ALL temporary files
+        for path in temp_paths:
+            if os.path.exists(path):
+                os.remove(path)
     visual_evidence_url = f"/reports/{session_id}/evidence.png"
     report_url = f"/reports/{session_id}/download"
 

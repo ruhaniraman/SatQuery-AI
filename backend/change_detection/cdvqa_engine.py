@@ -22,8 +22,8 @@ from typing import Callable, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from change_mask_segmenter import ChangeMaskSegmenter
-from change_metrics import ChangeMetricsCalculator, ChangeRegion
+from change_detection.change_mask_segmenter import ChangeMaskSegmenter
+from change_detection.change_metrics import ChangeMetricsCalculator, ChangeRegion
 
 # ---------------------------------------------------------------------------
 # Optional: Qwen2-VL (same lazy-load + fallback pattern as Member 2)
@@ -200,6 +200,7 @@ class ChangeDetectionEngine:
         resolution_m_per_px: Optional[float] = None,
         top_left_lat_lon: Optional[Tuple[float, float]] = (37.7749, -122.4194),
         vlm_fn: Optional[Callable[[str, np.ndarray, np.ndarray], str]] = None,
+        user_query: str = "",
     ) -> ChangeDetectionResult:
         """Run full bi-temporal change detection pipeline."""
         t0 = time.perf_counter()
@@ -222,10 +223,18 @@ class ChangeDetectionEngine:
         severity_order = {"CRITICAL": 4, "HIGH": 3, "MODERATE": 2, "LOW": 1}
         overall_sev = max((r.severity for r in change_regions), key=lambda s: severity_order.get(s, 0), default="LOW")
 
-        prompt = self._build_prompt(date_a, date_b, change_pct, change_regions, overall_sev)
+        base_prompt = self._build_prompt(date_a, date_b, change_pct, change_regions, overall_sev)
+        
+        # DEBUG MODE: If a user query exists, ONLY use the user query. Ignore the math.
+        if user_query:
+            final_prompt = user_query
+        else:
+            final_prompt = base_prompt
 
         caller = vlm_fn or self._vlm.call
-        explanation = caller(prompt, image_a, image_b_aligned)
+        explanation = caller(final_prompt, image_a, image_b_aligned)
+        
+        prompt = final_prompt
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
         confidence = float(np.clip(1.0 - ssim_score, 0.0, 1.0))
@@ -341,10 +350,9 @@ class ChangeDetectionEngine:
             f"Image A is from {date_a}. Image B is from {date_b}. "
             f"{change_pct:.2f}% of the area has changed between the two captures (HAZARD SEVERITY: {severity}). "
             f"{region_info}"
-            "Based on both images, describe in detail what changed: "
-            "what was present before and what is present now, and provide "
-            "any likely remote-sensing interpretation (e.g. urban expansion, "
-            "deforestation, flooding, construction)."
+            "Carefully compare the two images and describe exactly what physical changes occurred in the landscape. "
+            "Focus strictly on the visual evidence, such as the appearance or disappearance of water bodies, vegetation, or infrastructure. "
+            "Do not invent details."
         )
 
     def save_outputs(
