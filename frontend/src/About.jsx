@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 const About = () => {
   return (
@@ -14,7 +15,7 @@ const About = () => {
       boxSizing: 'border-box'
     }}>
       
-      {/* Subtle Animated Space Background Layer */}
+      {/* Animated Space Background Layer */}
       <style>
         {`
           @keyframes spaceDrift {
@@ -27,9 +28,9 @@ const About = () => {
       <div style={{
         position: 'fixed',
         inset: 0,
-        background: 'radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.15) 0%, transparent 40%), radial-gradient(circle at 80% 80%, rgba(147, 197, 253, 0.1) 0%, transparent 40%)',
+        background: 'radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.25) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(147, 197, 253, 0.15) 0%, transparent 50%), radial-gradient(circle at 50% 50%, rgba(30, 58, 138, 0.2) 0%, transparent 70%)',
         backgroundSize: '200% 200%',
-        animation: 'spaceDrift 20s ease-in-out infinite',
+        animation: 'spaceDrift 15s ease-in-out infinite',
         zIndex: 1,
         pointerEvents: 'none'
       }} />
@@ -59,8 +60,8 @@ const About = () => {
           SIH 2026
         </div>
 
-        <a 
-          href="/" 
+        <Link 
+          to="/" 
           style={{
             fontSize: '0.75rem',
             fontWeight: 500,
@@ -75,20 +76,20 @@ const About = () => {
           onMouseOut={(e) => e.currentTarget.style.color = '#64748b'}
         >
           ← Home
-        </a>
+        </Link>
       </nav>
 
       {/* Main Content Container - Expanded for Editorial Layout */}
       <div style={{
         position: 'relative',
         zIndex: 10,
-        maxWidth: '1200px', // Wider max-width for the split layout
+        maxWidth: '1200px',
         margin: '0 auto',
         padding: '12rem 2rem 8rem 2rem',
         boxSizing: 'border-box'
       }}>
         
-        {/* Left-Aligned Hero Section (Matches Editorial Reference) */}
+        {/* Left-Aligned Hero Section */}
         <div style={{ textAlign: 'left', marginBottom: '8rem', maxWidth: '800px' }}>
           <div style={{ 
             fontSize: '0.8rem', 
@@ -118,12 +119,10 @@ const About = () => {
           
           {/* Section 01 */}
           <div style={editorialRowStyle}>
-            {/* Massive Number & Title Column */}
             <div style={titleColStyle}>
               <div style={massiveNumberStyle}>01</div>
               <h2 style={chapterTitleStyle}>What is<br/>SatQuery AI?</h2>
             </div>
-            {/* Glass Slab Content Column */}
             <div style={contentColStyle}>
               <div style={cardStyle}
                 onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(96, 165, 250, 0.4)'}
@@ -136,7 +135,7 @@ const About = () => {
             </div>
           </div>
 
-          {/* Section 02 - Reversed Layout for Staggered Look */}
+          {/* Section 02 */}
           <div style={{ ...editorialRowStyle, flexDirection: 'row-reverse' }}>
             <div style={titleColStyle}>
               <div style={massiveNumberStyle}>02</div>
@@ -201,7 +200,7 @@ const massiveNumberStyle = {
   fontSize: 'clamp(5rem, 10vw, 8rem)',
   fontWeight: 900,
   lineHeight: '0.8',
-  color: 'rgba(255, 255, 255, 0.05)', // Extremely faint watermark look
+  color: 'rgba(255, 255, 255, 0.05)',
   letterSpacing: '-4px'
 };
 
@@ -218,7 +217,6 @@ const contentColStyle = {
   flex: '1 1 500px'
 };
 
-// Premium Frosted Glass Slab
 const cardStyle = {
   background: 'rgba(15, 23, 42, 0.4)',
   backdropFilter: 'blur(20px)',
