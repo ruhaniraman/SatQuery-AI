@@ -15,23 +15,33 @@ const About = () => {
       boxSizing: 'border-box'
     }}>
       
-      {/* Animated Space Background Layer */}
-      <style>
-        {`
-          @keyframes spaceDrift {
-            0% { background-position: 0% 0%; }
-            50% { background-position: 100% 100%; }
-            100% { background-position: 0% 0%; }
-          }
-        `}
-      </style>
+      {/* Background MP4 Space Video */}
+      <video 
+        autoPlay 
+        loop 
+        muted 
+        playsInline 
+        style={{
+          position: 'fixed',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          zIndex: 1,
+          pointerEvents: 'none',
+          opacity: 0.6
+        }}
+      >
+        <source src="/space-bg.mp4" type="video/mp4" />
+        Your browser does not support the video tag.
+      </video>
+
+      {/* Dark Overlay Gradient to keep text readable */}
       <div style={{
         position: 'fixed',
         inset: 0,
-        background: 'radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.25) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(147, 197, 253, 0.15) 0%, transparent 50%), radial-gradient(circle at 50% 50%, rgba(30, 58, 138, 0.2) 0%, transparent 70%)',
-        backgroundSize: '200% 200%',
-        animation: 'spaceDrift 15s ease-in-out infinite',
-        zIndex: 1,
+        background: 'radial-gradient(circle at 50% 50%, rgba(1, 3, 8, 0.3) 0%, rgba(1, 3, 8, 0.75) 100%)',
+        zIndex: 2,
         pointerEvents: 'none'
       }} />
 
@@ -79,7 +89,7 @@ const About = () => {
         </Link>
       </nav>
 
-      {/* Main Content Container - Expanded for Editorial Layout */}
+      {/* Main Content Container */}
       <div style={{
         position: 'relative',
         zIndex: 10,
@@ -125,8 +135,14 @@ const About = () => {
             </div>
             <div style={contentColStyle}>
               <div style={cardStyle}
-                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(96, 165, 250, 0.4)'}
-                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)'}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(96, 165, 250, 0.5)';
+                  e.currentTarget.style.background = 'rgba(15, 23, 42, 0.25)';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+                  e.currentTarget.style.background = 'rgba(15, 23, 42, 0.12)';
+                }}
               >
                 <p style={cardTextStyle}>
                   SatQuery AI is an intelligent geospatial observation engine built for high-speed analysis of satellite data. It transforms complex orbital telemetry and multi-spectral raster inputs into clear, actionable intelligence accessible through fluid visual interfaces and automated query pipelines.
@@ -143,8 +159,14 @@ const About = () => {
             </div>
             <div style={contentColStyle}>
               <div style={cardStyle}
-                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(96, 165, 250, 0.4)'}
-                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)'}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(96, 165, 250, 0.5)';
+                  e.currentTarget.style.background = 'rgba(15, 23, 42, 0.25)';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+                  e.currentTarget.style.background = 'rgba(15, 23, 42, 0.12)';
+                }}
               >
                 <p style={cardTextStyle}>
                   Traditional GIS processing is slow, resource-intensive, and trapped behind expert software, causing critical delays during emergency responses, environmental tracking, and infrastructure monitoring. SatQuery AI eliminates these bottlenecks by democratizing access to real-time Earth observation data.
@@ -161,8 +183,14 @@ const About = () => {
             </div>
             <div style={contentColStyle}>
               <div style={cardStyle}
-                onMouseOver={(e) => e.currentTarget.style.borderColor = 'rgba(96, 165, 250, 0.4)'}
-                onMouseOut={(e) => e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)'}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(96, 165, 250, 0.5)';
+                  e.currentTarget.style.background = 'rgba(15, 23, 42, 0.25)';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+                  e.currentTarget.style.background = 'rgba(15, 23, 42, 0.12)';
+                }}
               >
                 <p style={cardTextStyle}>
                   By pairing high-performance 3D WebGL globe rendering with intelligent background computer vision models, SatQuery AI parses spatial changes on-demand. Users can execute targeted queries, track environmental shifts instantly, and monitor global assets without manual data aggregation.
@@ -217,21 +245,22 @@ const contentColStyle = {
   flex: '1 1 500px'
 };
 
+// Updated Almost-Transparent Glass Slab Effect
 const cardStyle = {
-  background: 'rgba(15, 23, 42, 0.4)',
-  backdropFilter: 'blur(20px)',
-  WebkitBackdropFilter: 'blur(20px)',
-  border: '1px solid rgba(255, 255, 255, 0.08)',
+  background: 'rgba(15, 23, 42, 0.12)', // Much more transparent (reduced opacity)
+  backdropFilter: 'blur(16px)',          // Frosted glass blur effect
+  WebkitBackdropFilter: 'blur(16px)',
+  border: '1px solid rgba(255, 255, 255, 0.15)', // Crisp subtle edge
   borderRadius: '24px',
   padding: '3rem',
-  boxShadow: '0 30px 60px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
-  transition: 'border-color 0.4s ease',
+  boxShadow: '0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2)', // Inner light reflection highlight
+  transition: 'all 0.4s ease',
 };
 
 const cardTextStyle = {
   fontSize: '1.1rem',
   lineHeight: '1.8',
-  color: '#94a3b8',
+  color: '#cbd5e1', // Slightly brighter text for high contrast against transparency
   margin: 0,
   fontWeight: 400
 };
