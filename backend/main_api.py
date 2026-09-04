@@ -82,7 +82,7 @@ def shared_vram_caller(prompt: str, img_a_np: np.ndarray, img_b_np: np.ndarray) 
     inputs = engine.processor(text=[text], images=[pil_a, pil_b], padding=True, return_tensors="pt").to("cuda")
 
     with torch.no_grad():
-        output_ids = engine.model.generate(**inputs, max_new_tokens=512)
+        output_ids = engine.model.generate(**inputs, max_new_tokens=1024)
 
     generated_ids = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, output_ids)]
     return engine.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
@@ -153,10 +153,31 @@ async def analyze(
 
             image_inputs.append(ImageInput(path=temp_path, modality=modality, date=img_date))
 
-        # 2. --- MEMBER 1 AGENT MANAGER (THE BRAIN) ---
+        ## 2. --- MEMBER 1 AGENT MANAGER (THE BRAIN) ---
         classification = classify_query(query)
         task = classification.task
         print(f"Agent Manager classified task: {task.value} (Confidence: {classification.confidence})")
+
+        # ---> NEW: Hardware/Context Override Logic <---
+        # If 2 images are uploaded but the text classifier guessed single-image, override it.
+        if len(image_inputs) == 2 and task == TaskType.SINGLE_IMAGE_VQA:
+            modality_a = image_inputs[0].modality
+            modality_b = image_inputs[1].modality
+            
+            # If one is SAR and one is Optical, it must be a Fusion task
+            if modality_a != modality_b:
+                task = TaskType.OPTICAL_SAR_FUSION
+            # If both are the same modality, it must be Change Detection
+            else:
+                task = TaskType.CHANGE_DETECTION
+                
+            print(f"Context Override: 2 images detected. Routing updated to {task.value}")
+            
+        # Fallback: If 1 image is uploaded but it guessed a multi-image task, force single-image
+        elif len(image_inputs) == 1 and task != TaskType.SINGLE_IMAGE_VQA:
+            task = TaskType.SINGLE_IMAGE_VQA
+            print(f"Context Override: 1 image detected. Routing updated to {task.value}")
+        # ----------------------------------------------
 
         valid, error_msg = validate_inputs(task, image_inputs)
         if not valid:

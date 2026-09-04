@@ -46,7 +46,7 @@ class SingleImageSpecialist:
         
         # Generate the response
         with torch.no_grad():
-            output_ids = self.model.generate(**inputs, max_new_tokens=128)
+            output_ids = self.model.generate(**inputs, max_new_tokens=512)
             
         generated_ids = [output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs.input_ids, output_ids)]
         response = self.processor.batch_decode(generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)[0]

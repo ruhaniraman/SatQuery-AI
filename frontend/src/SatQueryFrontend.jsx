@@ -211,7 +211,7 @@ const SatQueryFrontend = () => {
           cursor: 'pointer',
           transition: 'all 0.2s ease'
         }}>
-          ACTIVE SYSTEM
+          ACTIVATE SYSTEM
         </div>
       </div>
 
