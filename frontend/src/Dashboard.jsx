@@ -297,7 +297,7 @@ export default function SatQueryDashboard() {
                        <Bot size={16} className="text-blue-400 mt-0.5 shrink-0" />
                     )}
                     <div className={`p-3 rounded-lg max-w-[85%] ${msg.role === 'user' ? 'bg-slate-800/60 text-slate-200 border border-slate-700/50' : 'bg-blue-950/30 border border-blue-700/40 text-blue-100'}`}>
-                      <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                      <p className="whitespace-pre-wrap leading-relaxed text-justify">{msg.content}</p>
                     </div>
                   </div>
                 ))}
