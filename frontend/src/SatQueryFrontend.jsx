@@ -1,8 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import { setOptions, importLibrary } from '@googlemaps/js-api-loader';
 import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 
 const SatQueryFrontend = () => {
+  const navigate = useNavigate();
   const mapContainerRef = useRef(null);
   const map3DRef = useRef(null);
   const requestRef = useRef();
@@ -188,7 +190,9 @@ const SatQueryFrontend = () => {
           SATQUERY AI
         </h1>
 
-        <div style={{
+        <div 
+          onClick={() => navigate('/dashboard')}
+          style={{
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',

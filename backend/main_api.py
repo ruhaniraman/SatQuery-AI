@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from pdf_report_generator import generate_pdf_report
@@ -34,6 +35,17 @@ app = FastAPI(
     title="SatQuery AI Backend & Reporting Service",
     version="1.0.0",
     description="FastAPI service for multi-modal agentic analysis and PDF report generation",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173", 
+        "http://127.0.0.1:5173"
+    ], # Explicitly whitelist the Vite frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 os.makedirs("reports", exist_ok=True)
