@@ -16,13 +16,13 @@ export default function SatQueryDashboard() {
   const [imageB, setImageB] = useState(null);
   const [previewA, setPreviewA] = useState(null);
   const [previewB, setPreviewB] = useState(null);
-  const [showImageB, setShowImageB] = useState(false); // NEW: Toggles Image B input
+  const [showImageB, setShowImageB] = useState(false); 
 
   // Execution & Chat State
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState(null);
   const [error, setError] = useState(null);
-  const [chatHistory, setChatHistory] = useState([]);
+  const [chatHistory, setChatHistory] = useState([]); 
 
   // Refs for hidden file inputs
   const fileInputARef = useRef(null);
@@ -79,7 +79,11 @@ export default function SatQueryDashboard() {
 
       const data = await response.json();
       setExecutionResult(data);
-      setChatHistory(prev => [...prev, { role: 'ai', content: data.answer }]);
+      
+      // Remove Markdown asterisks from the AI's answer
+      const cleanAnswer = data.answer.replace(/\*/g, '');
+      
+      setChatHistory(prev => [...prev, { role: 'ai', content: cleanAnswer }]);
       setActiveLayer('evidence'); 
     } catch (err) {
       setError(err.message);
@@ -151,14 +155,14 @@ export default function SatQueryDashboard() {
 
       <div className="relative z-10 flex flex-col h-full">
 
-        <header className="flex items-center justify-between px-6 py-2 bg-black/50 backdrop-blur-md border-b border-white/10 shrink-0">
-          <div className="flex items-center space-x-4">
-            <div className="bg-blue-500/90 p-2 rounded-lg text-slate-950 font-bold">
-              <Cpu size={22} />
+        {/* Top Navbar - Pushed up with reduced padding */}
+        <header className="flex items-center justify-between px-6 py-1.5 bg-black/50 backdrop-blur-md border-b border-white/10 shrink-0">
+          <div className="flex items-center space-x-3">
+            <div className="bg-blue-500/90 p-1.5 rounded-lg text-slate-950 font-bold">
+              <Cpu size={20} />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-wide leading-none">SatQuery-AI</h1>
-              <p className="text-[10px] text-slate-300 mt-1">Agentic Remote-Sensing Intelligence Platform</p>
+              <h1 className="text-xl font-bold tracking-wide leading-none">SatQuery-AI</h1>
             </div>
           </div>
           <div className="flex items-center space-x-4 text-sm">
@@ -171,14 +175,14 @@ export default function SatQueryDashboard() {
 
         <div className="flex flex-1 overflow-hidden">
 
-          <main className="flex-1 flex flex-col overflow-hidden p-4 space-y-4">
+          {/* LEFT: Controls & Map - Set to exactly 50% width */}
+          <main className="w-1/2 flex flex-col overflow-hidden p-4 space-y-4">
 
             <div className="bg-black/50 backdrop-blur-md border border-white/10 rounded-xl p-3 flex items-center gap-4 shrink-0 overflow-x-auto">
               <div className="flex items-center gap-2 text-xs text-slate-300 font-semibold uppercase tracking-wider shrink-0 pr-2 border-r border-white/10">
                 <Upload size={14} className="text-blue-400" /> Inputs
               </div>
               
-              {/* Image A Upload */}
               <input 
                 type="file" 
                 accept="image/jpeg, image/png, image/webp, image/tiff, .tif" 
@@ -194,7 +198,6 @@ export default function SatQueryDashboard() {
                 <span className="text-xs whitespace-nowrap">{imageA ? imageA.name : 'Image A · Optical/SAR'}</span>
               </div>
 
-              {/* Dynamic Image B Toggle */}
               {!showImageB ? (
                 <button
                   type="button"
@@ -237,8 +240,7 @@ export default function SatQueryDashboard() {
                 {renderCenterCanvas()}
               </div>
 
-              {/* Floating Top Bar on Map - Adjusted to top-2 to push it higher */}
-              <div className="absolute top-2 left-2 right-2 z-50 flex justify-between items-center bg-black/60 backdrop-blur-md border border-white/10 px-4 py-2 rounded-lg text-xs pointer-events-auto">
+              <div className="absolute top-2 left-2 right-2 z-50 flex justify-between items-center bg-black/60 backdrop-blur-md border border-white/10 px-4 py-1.5 rounded-lg text-xs pointer-events-auto">
                 <div className="flex items-center space-x-2 text-slate-200">
                   <Eye size={14} className="text-blue-400" />
                   <span>Active Layer: <strong className="text-blue-400 uppercase">{activeLayer}</strong></span>
@@ -270,14 +272,15 @@ export default function SatQueryDashboard() {
             </div>
           </main>
 
-          <section className="w-[26rem] bg-black/50 backdrop-blur-md border-l border-white/10 flex flex-col justify-between p-4 overflow-y-auto shrink-0">
+          {/* RIGHT: AI Assistant + Audit Trace - Set to exactly 50% width */}
+          <section className="w-1/2 bg-black/50 backdrop-blur-md border-l border-white/10 flex flex-col h-full p-4 shrink-0">
 
-            <div className="space-y-4 flex flex-col flex-1 overflow-hidden">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center shrink-0">
+            <div className="flex flex-col flex-1 min-h-0">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center shrink-0 mb-3">
                 <MessageSquare size={14} className="mr-2 text-blue-400" /> AI Assistant & VQA
               </h3>
 
-              <div className="bg-black/40 backdrop-blur-sm rounded-lg p-3 border border-white/10 flex-1 overflow-y-auto space-y-4 text-xs">
+              <div className="bg-black/40 backdrop-blur-sm rounded-lg p-3 border border-white/10 flex-1 min-h-0 overflow-y-auto space-y-4 text-xs mb-3">
                 
                 {chatHistory.length === 0 && (
                   <div className="bg-black/30 backdrop-blur-sm p-3 rounded-lg border border-white/10 text-slate-300 flex items-start gap-3">
@@ -314,7 +317,7 @@ export default function SatQueryDashboard() {
                 )}
               </div>
 
-              <form onSubmit={handleRunPipeline} className="relative shrink-0">
+              <form onSubmit={handleRunPipeline} className="relative shrink-0 mb-2">
                 <input
                   type="text"
                   value={query}
@@ -333,12 +336,12 @@ export default function SatQueryDashboard() {
               </form>
             </div>
 
-            <div className="space-y-4 mt-4 pt-4 border-t border-white/10 shrink-0">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center">
+            <div className="pt-4 border-t border-white/10 shrink-0">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center mb-3">
                 <ShieldCheck size={14} className="mr-2 text-blue-400" /> Auditable Trace
               </h3>
 
-              <div className="bg-black/40 backdrop-blur-sm rounded-lg p-3 border border-white/10 text-[11px] space-y-1.5 text-slate-300 font-mono overflow-y-auto max-h-32">
+              <div className="bg-black/40 backdrop-blur-sm rounded-lg p-3 border border-white/10 text-[11px] space-y-1.5 text-slate-300 font-mono overflow-y-auto max-h-32 mb-3">
                 {executionResult?.agent_execution_trace ? (
                   <>
                     <p className="text-blue-400 truncate">ID: {executionResult.agent_execution_trace.pipeline_id}</p>
