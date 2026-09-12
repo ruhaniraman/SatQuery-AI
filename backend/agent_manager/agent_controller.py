@@ -1,269 +1,214 @@
-from agent_manager.schemas import ClassificationResult, ImageInput,ExecutionTrace
+import os
+import torch
+import ast
+from PIL import Image
+from io import BytesIO
+from contextlib import nullcontext
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, BitsAndBytesConfig
+from peft import PeftModel
+from geospatial_preprocessing.geotiff_loader import load_and_standardize_image
 
+class SatQueryEngine:
+    def __init__(self, base_model_id="Qwen/Qwen2-VL-2B-Instruct", adapters_base_dir="models/adapters"):
+        print("Initializing base Qwen2-VL-2B and adapters...")
+        
+        # Ensure correct pathing relative to the backend directory
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.isabs(adapters_base_dir):
+            adapters_base_dir = os.path.join(current_dir, "..", adapters_base_dir)
 
-# Dummy specialist functions
-def single_image_vqa():
-    print("Running Single Image VQA")
-    return {"status": "success"}
-
-
-def change_detection():
-    print("Running Change Detection")
-    return {"status": "success"}
-
-
-def grounding():
-    print("Running Grounding")
-    return {"status": "success"}
-
-
-def optical_sar_fusion():
-    print("Running Optical-SAR Fusion")
-    return {"status": "success"}
-# Tool Registry
-TOOL_REGISTRY = {
-    "SINGLE_IMAGE_VQA": single_image_vqa,
-    "CHANGE_DETECTION": change_detection,
-    "GROUNDING": grounding,
-    "OPTICAL_SAR_FUSION": optical_sar_fusion
-}
-
-# Query classification
-def classify_query(query):
-
-    query = query.lower()
-
-    if "change" in query or "changed" in query:
-        task = "CHANGE_DETECTION"
-        confidence = 0.95
-
-    elif "where" in query or "locate" in query:
-        task = "GROUNDING"
-        confidence = 0.90
-
-    elif "sar" in query or "optical" in query:
-        task = "OPTICAL_SAR_FUSION"
-        confidence = 0.90
-
-    else:
-        task = "SINGLE_IMAGE_VQA"
-        confidence = 0.80
-
-    return ClassificationResult(
-        task=task,
-        confidence=confidence
-    )
-
-
-# Input validation
-def validate_inputs(task, images):
-
-    if task in [
-        "SINGLE_IMAGE_VQA",
-        "GROUNDING"
-    ]:
-        if len(images) < 1:
-            return False, "This task requires at least one image."
-
-    elif task == "CHANGE_DETECTION":
-
-        if len(images) < 2:
-            return False, "Change detection requires two images."
-
-        if not images[0].date or not images[1].date:
-            return False, "Both images must have dates."
-
-        if images[0].date == images[1].date:
-            return False, "The two images must have different dates."
-
-    elif task == "OPTICAL_SAR_FUSION":
-
-        if len(images) < 2:
-            return False, "Optical-SAR fusion requires two images."
-
-        modalities = {
-            image.modality.lower()
-            for image in images
-        }
-
-        has_optical = (
-            "optical" in modalities
-            or "multispectral" in modalities
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16
         )
 
-        has_sar = "sar" in modalities
-
-        if not has_optical or not has_sar:
-            return False, (
-                "You need one optical/multispectral image "
-                "and one SAR image."
-            )
-
-    return True, None
-
-
-# Routing
-def route_query(query, images):
-
-    classification = classify_query(query)
-    task = classification.task
-
-    print("Query:", query)
-    print("Selected Task:", task)
-    print("Confidence:", classification.confidence)
-
-    # Validate inputs
-    valid, error = validate_inputs(task, images)
-
-    if not valid:
-
-        print("Validation Failed:", error)
-
-        trace = ExecutionTrace(
-            query=query,
-            task=task,
-            confidence=classification.confidence,
-            validation_status="failed",
-            execution_status="not_executed"
+        self.processor = AutoProcessor.from_pretrained(base_model_id)
+        self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            base_model_id,
+            quantization_config=bnb_config,
+            device_map="auto"
         )
 
-        print("Execution Trace:", trace)
+        # 1. Attach the primary adapter
+        agri_path = os.path.join(adapters_base_dir, "agriculture")
+        self.model = PeftModel.from_pretrained(self.model, agri_path, adapter_name="agriculture")
 
-        return {
-            "status": "error",
-            "message": error,
-            "trace": trace.model_dump()
-        }
+        # 2. Attach the remaining adapters into the same model instance
+        defor_path = os.path.join(adapters_base_dir, "deforestation")
+        mine_path = os.path.join(adapters_base_dir, "mining")
+        
+        self.model.load_adapter(defor_path, adapter_name="deforestation")
+        self.model.load_adapter(mine_path, adapter_name="mining")
+        print("All domain LoRAs attached successfully!")
 
-    print("Validation Passed")
+    def route_intent(self, prompt: str, has_image: bool) -> str:
+        """Determines which adapter to activate based on strict command heuristics."""
+        if not has_image:
+            return "general"
 
-    # Find the correct specialist using the registry
-    tool = TOOL_REGISTRY.get(task.value)
+        text = prompt.lower()
+        
+        # 1. Define strict command verbs that indicate a need for technical extraction
+        command_verbs = ["classify", "detect", "tag", "assess", "extract", "estimate", "evaluate", "threshold"]
+        
+        # 2. Check if the user is explicitly asking for a strict technical task
+        has_command = any(verb in text for verb in command_verbs)
+        
+        # 3. Only route to specialized LoRAs if a command verb is present
+        if has_command:
+            if any(k in text for k in ["agriculture", "crop", "farm", "arable", "pasture"]):
+                return "agriculture"
+            elif any(k in text for k in ["deforestation", "logging", "clearing", "canopy loss"]):
+                return "deforestation"
+            elif any(k in text for k in ["mine", "mining", "quarry", "pit", "coalfield", "extraction"]):
+                return "mining"
+                
+        # 4. Default to the conversational base model for everything else
+        return "general"
 
-    if tool is None:
-        return {
-            "status": "error",
-            "message": "No specialist found for this task."
-        }
+    def _tiled_inference(self, img, internal_prompt, grid_size=(2, 2)):
+        """Splits the image into a grid, runs the model on each tile, and stitches coordinates."""
+        rows, cols = grid_size
+        width, height = img.size
+        tile_w = width // cols
+        tile_h = height // rows
+        
+        all_global_boxes = []
 
-    # Run the selected specialist
-    result = tool()
+        # Loop through the grid
+        for row in range(rows):
+            for col in range(cols):
+                # 1. Crop the tile
+                left = col * tile_w
+                top = row * tile_h
+                right = (col + 1) * tile_w
+                bottom = (row + 1) * tile_h
+                tile_img = img.crop((left, top, right, bottom))
+                
+                # 2. Query the model for this specific tile
+                messages = [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": internal_prompt}
+                    ]
+                }]
+                
+                text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                inputs = self.processor(text=[text_input], images=[tile_img], return_tensors="pt", padding=True).to("cuda")
+                
+                with torch.no_grad():
+                    output_ids = self.model.generate(**inputs, max_new_tokens=128)
+                    
+                generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
+                raw_response = self.processor.decode(generated_ids, skip_special_tokens=True).strip()
+                
+                # 3. Parse the output and convert to global coordinates
+                # We expect raw_response to look like [[0.1, 0.1, 0.4, 0.4]] or "none"
+                if raw_response.lower() not in ["no", "none", "[]", "null"]:
+                    try:
+                        # Safely evaluate the string into a Python list
+                        tile_boxes = ast.literal_eval(raw_response)
+                        if isinstance(tile_boxes, list) and len(tile_boxes) > 0:
+                            # If it returned a single box [y,x,y,x], wrap it in a list [[y,x,y,x]]
+                            if not isinstance(tile_boxes[0], list):
+                                tile_boxes = [tile_boxes]
+                                
+                            for box in tile_boxes:
+                                if len(box) == 4:
+                                    ymin, xmin, ymax, xmax = box
+                                    # Convert local tile coordinates (0-1) to global image coordinates (0-1)
+                                    global_ymin = (row + ymin) / rows
+                                    global_xmin = (col + xmin) / cols
+                                    global_ymax = (row + ymax) / rows
+                                    global_xmax = (col + xmax) / cols
+                                    
+                                    # Round to 3 decimal places for cleaner output
+                                    all_global_boxes.append([
+                                        round(global_ymin, 3), 
+                                        round(global_xmin, 3), 
+                                        round(global_ymax, 3), 
+                                        round(global_xmax, 3)
+                                    ])
+                    except (SyntaxError, ValueError):
+                        pass # Ignore if the model hallucinated text instead of an array
+                        
+        return all_global_boxes
+    
+    def query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, max_new_tokens: int = 256) -> str:
+        has_image = (image_path is not None and os.path.exists(image_path)) or (image_bytes is not None)
+        active_adapter = self.route_intent(prompt, has_image)
 
-    # Create execution trace
-    trace = ExecutionTrace(
-        query=query,
-        task=task,
-        confidence=classification.confidence,
-        validation_status="passed",
-        execution_status=result["status"]
-    )
+        # --- 1. PROMPT AUGMENTATION (Neutral Format) ---
+        internal_prompt = prompt
+        if active_adapter == "mining":
+            internal_prompt += " Return a list of bounding boxes for ALL visible extraction pits, formatted exactly like: [[ymin, xmin, ymax, xmax], ...]. If purely urban or water, output 'none'."
+        elif active_adapter == "deforestation":
+            internal_prompt += " Return the confidence score for logging activity, or 'none' if pristine."
+        elif active_adapter == "agriculture":
+            internal_prompt += " Return the classification data, or 'none' if no crops are visible."
 
-    print("Execution Trace:", trace)
+        # Single direct pass
+        if active_adapter == "general":
+            context_manager = self.model.disable_adapter()
+        else:
+            self.model.set_adapter(active_adapter)
+            context_manager = nullcontext()
 
-    return {
-        **result,
-        "trace": trace.model_dump()
-    }
+        # Load image (Make sure to pass 'internal_prompt' instead of the raw user prompt!)
+        if has_image:
+            if image_path:
+                img_array, metadata = load_and_standardize_image(image_path)
+                img = Image.fromarray(img_array)
+                img.save("post_loader_debug.jpg")
+            elif image_bytes:
+                img = Image.open(BytesIO(image_bytes)).convert("RGB")
 
-# Test validation
-if __name__ == "__main__":
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": internal_prompt}
+                ]
+            }]
+            images = [img]
+        else:
+            messages = [{"role": "user", "content": internal_prompt}]
+            images = None
 
-    test_cases = [
+        if active_adapter == "mining" and has_image:
+            global_boxes = self._tiled_inference(img, internal_prompt, grid_size=(4, 4))
+            
+            if not global_boxes: # If list is empty
+                return "No surface extraction or pit mining features detected in this sector."
+                
+            # Remove any exact duplicates just in case, and return as a string for the frontend
+            unique_boxes = [list(x) for x in set(tuple(box) for box in global_boxes)]
+            return str(unique_boxes)
 
-        # 1. Change detection with only 1 image
-        {
-            "name": "Change Detection - 1 Image",
-            "query": "What changed?",
-            "images": [
-                ImageInput(
-                    path="image1.tif",
-                    modality="optical",
-                    date="2025-01-10"
-                )
-            ]
-        },
+        text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(text=[text_input], images=images, return_tensors="pt", padding=True).to("cuda")
 
-        # 2. Change detection with same dates
-        {
-            "name": "Change Detection - Same Dates",
-            "query": "What changed?",
-            "images": [
-                ImageInput(
-                    path="image1.tif",
-                    modality="optical",
-                    date="2025-01-10"
-                ),
-                ImageInput(
-                    path="image2.tif",
-                    modality="optical",
-                    date="2025-01-10"
-                )
-            ]
-        },
+        with torch.no_grad():
+            with context_manager:
+                output_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
 
-        # 3. Change detection with correct inputs
-        {
-            "name": "Change Detection - Correct",
-            "query": "What changed?",
-            "images": [
-                ImageInput(
-                    path="image1.tif",
-                    modality="optical",
-                    date="2025-01-10"
-                ),
-                ImageInput(
-                    path="image2.tif",
-                    modality="optical",
-                    date="2025-02-10"
-                )
-            ]
-        },
+        generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
+        raw_response = self.processor.decode(generated_ids, skip_special_tokens=True).strip()
 
-        # 4. Optical + SAR with correct inputs
-        {
-            "name": "Optical + SAR - Correct",
-            "query": "Analyze the optical and SAR images.",
-            "images": [
-                ImageInput(
-                    path="optical.tif",
-                    modality="optical",
-                    date="2025-01-10"
-                ),
-                ImageInput(
-                    path="sar.tif",
-                    modality="sar",
-                    date="2025-01-10"
-                )
-            ]
-        },
+        # --- 2. MULTI-WORD NEGATIVE FORMATTING ---
+        # Translate the blunt 'no' into a professional UI response
+        if raw_response.lower() in ["no", "none", "[]", "null"]:
+            if active_adapter == "mining":
+                return "No surface extraction or pit mining features detected in this sector."
+            elif active_adapter == "deforestation":
+                return "No active logging or canopy loss detected."
+            elif active_adapter == "agriculture":
+                return "No distinct agricultural features detected."
+                
+        return raw_response
 
-        # 5. Optical + Optical - Incorrect
-        {
-            "name": "Optical + SAR - Missing SAR",
-            "query": "Analyze the optical and SAR images.",
-            "images": [
-                ImageInput(
-                    path="optical1.tif",
-                    modality="optical",
-                    date="2025-01-10"
-                ),
-                ImageInput(
-                    path="optical2.tif",
-                    modality="optical",
-                    date="2025-02-10"
-                )
-            ]
-        }
-    ]
-
-    for test in test_cases:
-
-        print("\nTest:", test["name"])
-
-        result = route_query(
-            test["query"],
-            test["images"]
-        )
-
-        print("Result:", result)
-        print("-------------------------")
+# Initialize a global instance so FastAPI can import it
+agent = SatQueryEngine()

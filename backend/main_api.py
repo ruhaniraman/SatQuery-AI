@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from pdf_report_generator import generate_pdf_report
-from single_image.single_image_vqa_engine import SingleImageSpecialist
 
 from PIL import Image
 from change_detection.cdvqa_engine import ChangeDetectionEngine
@@ -25,7 +24,7 @@ from geospatial_preprocessing.geotiff_loader import load_and_standardize_image
 from geospatial_preprocessing.test_failures import check_bbox_overlap, validate_downstream_payload
 from geospatial_preprocessing.sar_preprocessor import apply_lee_filter
 
-from agent_manager.agent_controller import classify_query, validate_inputs
+from agent_manager.agent_controller import agent
 from agent_manager.schemas import ImageInput, TaskType
 
 from fusion.sar_optical_fusion import execute_optical_sar_fusion
@@ -50,23 +49,16 @@ app.add_middleware(
 os.makedirs("reports", exist_ok=True)
 app.mount("/reports", StaticFiles(directory="reports"), name="reports")
 
-# --- Initialize the AI Engine ---
-# This loads into your 6GB VRAM on startup so it doesn't have to reload for every request
-print("Booting up the Single-Image Specialist...")
-engine = SingleImageSpecialist(adapter_path="./models")
 
 print("Initializing CDVQA Engine...")
 cd_engine = ChangeDetectionEngine()
 
 def shared_vram_caller(prompt: str, img_a_np: np.ndarray, img_b_np: np.ndarray) -> str:
-    """Forces Member 3's engine to use Member 1's already-loaded Qwen model!"""
     print("VLM Bridge Activated: Processing multi-image prompt...")
     
-    # Convert Member 3's OpenCV numpy arrays (BGR) to PIL Images (RGB)
     pil_a = Image.fromarray(img_a_np)
     pil_b = Image.fromarray(img_b_np)
 
-    # Format the prompt exactly how Qwen2-VL expects multiple images
     messages = [{
         "role": "user",
         "content": [
@@ -76,16 +68,16 @@ def shared_vram_caller(prompt: str, img_a_np: np.ndarray, img_b_np: np.ndarray) 
         ]
     }]
 
-    # Run inference using YOUR loaded engine
-    text = engine.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = engine.processor(text=[text], images=[pil_a, pil_b], padding=True, return_tensors="pt").to("cuda")
+    text = agent.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = agent.processor(text=[text], images=[pil_a, pil_b], padding=True, return_tensors="pt").to("cuda")
 
     with torch.no_grad():
-        output_ids = engine.model.generate(**inputs, max_new_tokens=1024)
+        # BYPASS LORAS FOR MULTI-IMAGE TASKS
+        with agent.model.disable_adapter():
+            output_ids = agent.model.generate(**inputs, max_new_tokens=1024)
 
     generated_ids = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, output_ids)]
-    return engine.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-
+    return agent.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
 # --- Schema Definitions ---
 class AnalysisResponse(BaseModel):
@@ -152,38 +144,19 @@ async def analyze(
 
             image_inputs.append(ImageInput(path=temp_path, modality=modality, date=img_date))
 
-        ## 2. --- MEMBER 1 AGENT MANAGER (THE BRAIN) ---
-        classification = classify_query(query)
-        task = classification.task
-        print(f"Agent Manager classified task: {task.value} (Confidence: {classification.confidence})")
-
-        # ---> NEW: Hardware/Context Override Logic <---
-        # If 2 images are uploaded but the text classifier guessed single-image, override it.
-        if len(image_inputs) == 2 and task == TaskType.SINGLE_IMAGE_VQA:
+        ## 2. --- TASK ROUTING ---
+        if len(image_inputs) == 2:
             modality_a = image_inputs[0].modality
             modality_b = image_inputs[1].modality
             
-            # If one is SAR and one is Optical, it must be a Fusion task
             if modality_a != modality_b:
                 task = TaskType.OPTICAL_SAR_FUSION
-            # If both are the same modality, it must be Change Detection
             else:
                 task = TaskType.CHANGE_DETECTION
-                
-            print(f"Context Override: 2 images detected. Routing updated to {task.value}")
-            
-        # Fallback: If 1 image is uploaded but it guessed a multi-image task, force single-image
-        elif len(image_inputs) == 1 and task != TaskType.SINGLE_IMAGE_VQA:
+        else:
             task = TaskType.SINGLE_IMAGE_VQA
-            print(f"Context Override: 1 image detected. Routing updated to {task.value}")
-        # ----------------------------------------------
-
-        valid, error_msg = validate_inputs(task, image_inputs)
-        if not valid:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Agent Validation Failed: {error_msg}"
-            )
+            
+        print(f"Agent Manager routed task to: {task.value}")
 
         # 3. --- TASK EXECUTION ROUTING ---
         if task == TaskType.SINGLE_IMAGE_VQA:
@@ -205,7 +178,7 @@ async def analyze(
                 os.makedirs(os.path.dirname(evidence_img_path), exist_ok=True)
                 shutil.copy(single_img_path, evidence_img_path)
 
-            ai_answer = engine.analyze_image(single_img_path, query)
+            ai_answer = agent.query(prompt=query, image_path=single_img_path)
             
             agent_trace = {
                 "pipeline_id": session_id,
