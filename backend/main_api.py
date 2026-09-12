@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from pdf_report_generator import generate_pdf_report
-# Import your newly created local AI engine
 from single_image.single_image_vqa_engine import SingleImageSpecialist
 
 from PIL import Image
