@@ -96,7 +96,8 @@ class AnalysisResponse(BaseModel):
 )
 async def analyze(
     query: str = Form(..., description="Analytical query/prompt for the agent system"),
-    images: List[UploadFile] = File(default=[], description="Up to 2 images (e.g. satellite, drone, or document scans)"),
+    adapter: str = Form("general", description="Explicit adapter to route to"), 
+    images: List[UploadFile] = File(default=[], description="Up to 2 images"),
 ):
     if len(images) > 2:
         raise HTTPException(
@@ -160,7 +161,7 @@ async def analyze(
 
         # 3. --- TASK EXECUTION ROUTING ---
         if task == TaskType.SINGLE_IMAGE_VQA:
-            print("Routing to Single-Image Specialist...")
+            print(f"Routing to Single-Image Specialist with adapter: {adapter}...")
             # Load the single image for processing
             single_img_path = temp_paths[0]
             is_geospatial = single_img_path.lower().endswith('.tif')
@@ -178,7 +179,7 @@ async def analyze(
                 os.makedirs(os.path.dirname(evidence_img_path), exist_ok=True)
                 shutil.copy(single_img_path, evidence_img_path)
 
-            ai_answer = agent.query(prompt=query, image_path=single_img_path)
+            ai_answer = agent.query(prompt=query, image_path=single_img_path, explicit_adapter=adapter)
             
             agent_trace = {
                 "pipeline_id": session_id,

@@ -23,6 +23,7 @@ export default function SatQueryDashboard() {
   const [executionResult, setExecutionResult] = useState(null);
   const [error, setError] = useState(null);
   const [chatHistory, setChatHistory] = useState([]); 
+  const [boxes, setBoxes] = useState([]); // Array to store bounding boxes
 
   // Refs for hidden file inputs
   const fileInputARef = useRef(null);
@@ -45,6 +46,59 @@ export default function SatQueryDashboard() {
     }
   };
 
+  // 1. DEDICATED ACTION SCAN LOGIC (For triggering specific LoRAs)
+  const handleActionScan = async (adapterName) => {
+    if (!imageA) {
+      setError("Please provide Image A to scan.");
+      return;
+    }
+
+    setIsExecuting(true);
+    setError(null);
+    setBoxes([]); // Clear old boxes on new scan
+    setChatHistory(prev => [...prev, { role: 'user', content: `[System]: Initiating ${adapterName} scan...` }]);
+
+    const formData = new FormData();
+    formData.append('query', "Extract features."); // The backend will augment this invisibly
+    formData.append('adapter', adapterName);
+    formData.append('images', imageA);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/analyze`, {
+        method: 'POST',
+        body: formData, 
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.detail || 'Analysis failed');
+      }
+
+      const data = await response.json();
+      setExecutionResult(data);
+      
+      // Try to parse the string into a JSON array for bounding boxes
+      try {
+        const parsedBoxes = JSON.parse(data.answer);
+        if (Array.isArray(parsedBoxes)) {
+          setBoxes(parsedBoxes);
+          setChatHistory(prev => [...prev, { role: 'ai', content: `Scan complete. Found ${parsedBoxes.length} potential regions.` }]);
+          setActiveLayer('imageA'); // Switch back to image A to see the boxes clearly
+        }
+      } catch (e) {
+        // If it's not a JSON array (e.g., "No surface extraction..."), just print the text
+        const cleanAnswer = data.answer.replace(/\*/g, '');
+        setChatHistory(prev => [...prev, { role: 'ai', content: cleanAnswer }]);
+      }
+      
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  // 2. GENERAL CHAT LOGIC (Never activates LoRAs)
   const handleRunPipeline = async (e) => {
     e.preventDefault();
     if (!query || !imageA) {
@@ -61,6 +115,7 @@ export default function SatQueryDashboard() {
 
     const formData = new FormData();
     formData.append('query', submittedQuery);
+    formData.append('adapter', 'general'); // Force base model processing
     formData.append('images', imageA);
     if (imageB && showImageB) {
       formData.append('images', imageB);
@@ -80,11 +135,13 @@ export default function SatQueryDashboard() {
       const data = await response.json();
       setExecutionResult(data);
       
-      // Remove Markdown asterisks from the AI's answer
       const cleanAnswer = data.answer.replace(/\*/g, '');
-      
       setChatHistory(prev => [...prev, { role: 'ai', content: cleanAnswer }]);
-      setActiveLayer('evidence'); 
+      
+      // Only switch to evidence tab automatically if change detection or fusion was run
+      if (imageB && showImageB) {
+        setActiveLayer('evidence'); 
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -94,35 +151,42 @@ export default function SatQueryDashboard() {
 
   const isTiff = (file) => file && file.name.toLowerCase().match(/\.tiff?$/);
 
+  // 3. UPDATED CANVAS LOGIC (Renders bounding boxes over Image A)
   const renderCenterCanvas = () => {
     let content = null;
+    let isShowingRealImage = false; // Tracks if we should draw the overlays
 
     if (activeLayer === 'evidence' && executionResult?.visual_evidence_url) {
-      content = <img src={`${BACKEND_URL}${executionResult.visual_evidence_url}`} alt="AI Evidence" className="object-contain w-full h-full z-10 relative" />;
+      content = <img src={`${BACKEND_URL}${executionResult.visual_evidence_url}`} alt="AI Evidence" className="absolute inset-0 w-full h-full object-cover rounded-lg" />;
+      isShowingRealImage = true; 
     } else if (activeLayer === 'imageB' && imageB) {
       content = isTiff(imageB) ? (
-        <div className="flex flex-col items-center justify-center h-full z-10 relative text-blue-400/70">
+        <div className="flex flex-col items-center justify-center h-full text-blue-400/70 z-10">
           <ImageIcon size={48} className="mb-3" />
           <p className="font-semibold tracking-wide">GeoTIFF Loaded</p>
           <p className="text-xs text-slate-400 mt-1">{imageB.name}</p>
         </div>
       ) : previewB ? (
-        <img src={previewB} alt="Image B" className="object-contain w-full h-full z-10 relative" />
+        <img src={previewB} alt="Image B" className="absolute inset-0 w-full h-full object-cover rounded-lg" />
       ) : null;
+      if (!isTiff(imageB) && previewB) isShowingRealImage = true;
     } else if (activeLayer === 'imageA' && imageA) {
       content = isTiff(imageA) ? (
-        <div className="flex flex-col items-center justify-center h-full z-10 relative text-blue-400/70">
+        <div className="flex flex-col items-center justify-center h-full text-blue-400/70 z-10">
           <ImageIcon size={48} className="mb-3" />
           <p className="font-semibold tracking-wide">GeoTIFF Loaded</p>
           <p className="text-xs text-slate-400 mt-1">{imageA.name}</p>
         </div>
       ) : previewA ? (
-        <img src={previewA} alt="Image A" className="object-contain w-full h-full z-10 relative" />
+        <img src={previewA} alt="Image A" className="absolute inset-0 w-full h-full object-cover rounded-lg" />
       ) : null;
+      if (!isTiff(imageA) && previewA) isShowingRealImage = true;
     }
 
     return (
-      <>
+      // Added pt-14 to push the canvas down below the Active Layer UI bar
+      <div className="relative w-full h-full flex items-center justify-center px-4 pt-14 pb-4 min-h-0 min-w-0">
+        {/* Background Grid */}
         <svg className="absolute inset-0 w-full h-full opacity-10 pointer-events-none" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
@@ -131,11 +195,32 @@ export default function SatQueryDashboard() {
           </defs>
           <rect width="100%" height="100%" fill="url(#grid)" />
         </svg>
-        {content}
-      </>
+        
+        {/* The aspect-square wrapper, constrained by max-w-full to prevent horizontal bleeding */}
+        <div className="relative h-full aspect-square max-w-full flex items-center justify-center bg-black/40 border border-white/10 rounded-lg overflow-hidden shadow-2xl">
+          {content}
+
+          {/* Overlays */}
+          {isShowingRealImage && boxes.length > 0 && boxes.map((box, index) => {
+            const [ymin, xmin, ymax, xmax] = box;
+            return (
+              <div 
+                key={index}
+                className="absolute border-[1.5px] border-red-500 bg-red-500/20 z-20 pointer-events-none shadow-[0_0_8px_rgba(239,68,68,0.6)]"
+                style={{
+                  top: `${ymin * 100}%`,
+                  left: `${xmin * 100}%`,
+                  width: `${(xmax - xmin) * 100}%`,
+                  height: `${(ymax - ymin) * 100}%`
+                }}
+              />
+            );
+          })}
+        </div>
+      </div>
     );
   };
-
+  
   return (
     <div
       className="flex flex-col h-screen text-slate-100 font-sans overflow-hidden relative"
@@ -155,7 +240,6 @@ export default function SatQueryDashboard() {
 
       <div className="relative z-10 flex flex-col h-full">
 
-        {/* Top Navbar - Pushed up with reduced padding */}
         <header className="flex items-center justify-between px-6 py-1.5 bg-black/50 backdrop-blur-md border-b border-white/10 shrink-0">
           <div className="flex items-center space-x-3">
             <div className="bg-blue-500/90 p-1.5 rounded-lg text-slate-950 font-bold">
@@ -175,7 +259,6 @@ export default function SatQueryDashboard() {
 
         <div className="flex flex-1 overflow-hidden">
 
-          {/* LEFT: Controls & Map - Set to exactly 50% width */}
           <main className="w-1/2 flex flex-col overflow-hidden p-4 space-y-4">
 
             <div className="bg-black/50 backdrop-blur-md border border-white/10 rounded-xl p-3 flex items-center gap-4 shrink-0 overflow-x-auto">
@@ -272,7 +355,6 @@ export default function SatQueryDashboard() {
             </div>
           </main>
 
-          {/* RIGHT: AI Assistant + Audit Trace - Set to exactly 50% width */}
           <section className="w-1/2 bg-black/50 backdrop-blur-md border-l border-white/10 flex flex-col h-full p-4 shrink-0">
 
             <div className="flex flex-col flex-1 min-h-0">
@@ -316,13 +398,42 @@ export default function SatQueryDashboard() {
                   </div>
                 )}
               </div>
+              
+              {/* ACTION BAR: Specific feature scanning controls */}
+              <div className="flex gap-2 mb-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleActionScan('mining')}
+                  className="flex-1 bg-amber-600/80 hover:bg-amber-500 text-white text-[10px] font-bold uppercase py-2 px-2 rounded transition cursor-pointer disabled:opacity-50"
+                  disabled={isExecuting}
+                >
+                  Scan Mines
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleActionScan('agriculture')}
+                  className="flex-1 bg-emerald-600/80 hover:bg-emerald-500 text-white text-[10px] font-bold uppercase py-2 px-2 rounded transition cursor-pointer disabled:opacity-50"
+                  disabled={isExecuting}
+                >
+                  Scan Agriculture
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleActionScan('deforestation')}
+                  className="flex-1 bg-rose-600/80 hover:bg-rose-500 text-white text-[10px] font-bold uppercase py-2 px-2 rounded transition cursor-pointer disabled:opacity-50"
+                  disabled={isExecuting}
+                >
+                  Scan Deforestation
+                </button>
+              </div>
 
+              {/* GENERAL CONVERSATION CHATBOX */}
               <form onSubmit={handleRunPipeline} className="relative shrink-0 mb-2">
                 <input
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Ask about changes, land cover..."
+                  placeholder="Ask general questions about the imagery..."
                   disabled={isExecuting}
                   className="w-full bg-black/40 backdrop-blur-sm border border-white/20 rounded-lg pl-3 pr-10 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-50"
                 />
