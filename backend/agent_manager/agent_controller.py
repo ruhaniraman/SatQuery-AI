@@ -162,7 +162,6 @@ class SatQueryEngine:
             if image_path:
                 img_array, metadata = load_and_standardize_image(image_path)
                 img = Image.fromarray(img_array)
-                img.save("post_loader_debug.jpg")
             elif image_bytes:
                 img = Image.open(BytesIO(image_bytes)).convert("RGB")
 
