@@ -226,3 +226,5 @@ mock_*.png
 mock_*.pdf
 
 reports/
+
+.vscode/
