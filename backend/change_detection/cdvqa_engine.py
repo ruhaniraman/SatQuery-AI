@@ -10,9 +10,8 @@ class ChangeDetectionResult:
 
 class ChangeDetectionEngine:
     def detect(self, image_a: np.ndarray, image_b: np.ndarray, vlm_fn, user_query: str = "") -> ChangeDetectionResult:
-        # =====================================================================
-        # PHASE 1: VLM Semantic Analysis (Side-by-Side Stitching)
-        # =====================================================================
+
+        # VLM Semantic Analysis (Side-by-Side Stitching)
         stitched_image = np.concatenate((image_a, image_b), axis=1)
 
         prompt = (
@@ -26,9 +25,7 @@ class ChangeDetectionEngine:
         # We pass ONLY the single stitched image to the VLM
         explanation = vlm_fn(prompt, stitched_image)
 
-        # =====================================================================
-        # PHASE 2: Calibrated OpenCV Spatial Differencing + Cloud Masking
-        # =====================================================================
+        # Calibrated OpenCV Spatial Differencing + Cloud Masking]
         gray1 = cv2.cvtColor(image_a, cv2.COLOR_RGB2GRAY)
         gray2 = cv2.cvtColor(image_b, cv2.COLOR_RGB2GRAY)
         blur1 = cv2.GaussianBlur(gray1, (21, 21), 0)
@@ -36,7 +33,7 @@ class ChangeDetectionEngine:
         
         diff = cv2.absdiff(blur1, blur2)
 
-        # --- Reintegrated Cloud Masking ---
+        # Reintegrated Cloud Masking
         _, cloud_mask1 = cv2.threshold(gray1, 200, 255, cv2.THRESH_BINARY)
         _, cloud_mask2 = cv2.threshold(gray2, 200, 255, cv2.THRESH_BINARY)
         combined_clouds = cv2.bitwise_or(cloud_mask1, cloud_mask2)
@@ -46,7 +43,7 @@ class ChangeDetectionEngine:
         # Zero out difference map where clouds exist
         diff[combined_clouds == 255] = 0
 
-        # --- Strict Threshold & Noise Filtering ---
+        # Strict Threshold & Noise Filtering 
         _, thresh = cv2.threshold(diff, 40, 255, cv2.THRESH_BINARY)
         noise_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
         close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (35, 35))
@@ -72,7 +69,6 @@ class ChangeDetectionEngine:
                 if area > 15000 and coverage_ratio < 0.75:
                     cv2.rectangle(evidence_img, (x, y), (x + w, y + h), (0, 255, 0), thickness=3)
                     
-                    # --- Text Boundary Fix ---
                     # Clamp the text coordinates so they never render off-screen
                     text_x = max(x, 10)
                     text_y = max(y - 10, 25)

@@ -228,3 +228,7 @@ mock_*.pdf
 reports/
 
 .vscode/
+
+# Ignore temporary image processing artifacts
+temp_*
+temp_aligned_*

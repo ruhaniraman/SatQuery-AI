@@ -6,6 +6,7 @@ import cv2
 import torch
 import json
 import re
+import ast
 import numpy as np
 from typing import Any, Dict, List, Optional
 
@@ -41,7 +42,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173", 
         "http://127.0.0.1:5173"
-    ], # Explicitly whitelist the Vite frontend
+    ], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -136,9 +137,6 @@ def align_standard_images(img1: np.ndarray, img2: np.ndarray) -> np.ndarray:
         points1[i, :] = kp1[match.queryIdx].pt
         points2[i, :] = kp2[match.trainIdx].pt
         
-    # --- THE FIX ---
-    # Use estimateAffinePartial2D instead of findHomography.
-    # This prevents the "hyperspace stretch" by locking the transform to 2D only.
     transform_matrix, inliers = cv2.estimateAffinePartial2D(points2, points1, cv2.RANSAC)
     
     height, width = img1.shape[:2]
@@ -169,8 +167,16 @@ class AnalysisResponse(BaseModel):
 async def analyze(
     query: str = Form(..., description="Analytical query/prompt for the agent system"),
     adapter: str = Form("general", description="Explicit adapter to route to"), 
+    chat_history: Optional[str] = Form(None, description="Stringified JSON of the conversation"), 
     images: List[UploadFile] = File(default=[], description="Up to 2 images"),
 ):
+    parsed_history = []
+    if chat_history:
+        try:
+            parsed_history = json.loads(chat_history)
+        except Exception:
+            pass
+
     if len(images) > 2:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -206,14 +212,14 @@ async def analyze(
                 f.write(img_bytes)
             temp_paths.append(temp_path)
             
-            # ---> NEW: Build schemas for the Agent Manager <---
+            # Build schemas for the Agent Manager
             filename_upper = img_file.filename.upper()
             modality = "sar" if "SAR" in filename_upper or "S1" in filename_upper else "optical"
             
             # Mock dates for validation (in production, extract from TIFF metadata)
             img_date = "2024-01-10" if "2024" in filename_upper else "2019-01-10"
             if idx == 1 and img_date == "2019-01-10":
-                img_date = "2024-02-10" # Pass Member 1's different-date requirement
+                img_date = "2024-02-10" 
 
             image_inputs.append(ImageInput(path=temp_path, modality=modality, date=img_date))
 
@@ -252,12 +258,42 @@ async def analyze(
                 shutil.copy(single_img_path, evidence_img_path)
 
             ai_answer = agent.query(prompt=query, image_path=single_img_path, explicit_adapter=adapter)
+
+            if isinstance(ai_answer, str) and ai_answer.strip().startswith("[") and ai_answer.strip().endswith("]"):
+                try:
+                    boxes = ast.literal_eval(ai_answer.strip())
+                    if isinstance(boxes, list) and len(boxes) > 0 and isinstance(boxes[0], list):
+                        annotated_img = img_array.copy()
+                        h, w = annotated_img.shape[:2]
+                        overlay = annotated_img.copy()
+                        
+                        for box in boxes:
+                            ymin, xmin, ymax, xmax = box
+                            x1, y1 = int(xmin * w), int(ymin * h)
+                            x2, y2 = int(xmax * w), int(ymax * h)
+                            
+                            # Semi-transparent red fill and solid red border
+                            cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 0), thickness=-1)
+                            cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (255, 0, 0), thickness=3)
+
+                        annotated_img = cv2.addWeighted(overlay, 0.35, annotated_img, 0.65, 0)
+                        cv2.imwrite(evidence_img_path, cv2.cvtColor(annotated_img, cv2.COLOR_RGB2BGR))
+                        
+                        # Replace raw coordinates with readable text for the report
+                        ai_answer = f"Scan complete. Found {len(boxes)} potential region(s)."
+                except Exception as err:
+                    print(f"Box parsing error: {err}")
             
+            model_name = "Qwen2-VL-2B-BigEarthNet-LoRA" if adapter != "general" else "Qwen2-VL-2B-Instruct (Base)"
             agent_trace = {
                 "pipeline_id": session_id,
                 "nodes_traversed": ["AgentManager", "InputPreprocessor", "SingleImageSpecialist", "VerifierNode"],
-                "telemetry": {"model_used": "Qwen2-VL-2B-BigEarthNet-LoRA"}
+                "telemetry": {
+                    "model_used": model_name,
+                    "active_adapter": adapter
+                }
             }
+            print(f"[{session_id}] Executed {model_name} with adapter '{adapter}'")
             
         elif task == TaskType.CHANGE_DETECTION:
             print("Routing to CDVQA Specialist via Agent Manager...")
@@ -297,7 +333,7 @@ async def analyze(
                 shape_a = img_a.shape[:2]
                 shape_b = img_b.shape[:2]
                 
-                # 1. THE GATEKEEPER (Tolerance Check)
+                # 1. Tolerance Check
                 if shape_a != shape_b:
                     height_diff = abs(shape_a[0] - shape_b[0])
                     width_diff = abs(shape_a[1] - shape_b[1])
@@ -309,7 +345,7 @@ async def analyze(
                         )
                     print(f"Minor shape mismatch ({shape_a} vs {shape_b}). Proceeding to optical alignment...")
 
-                # 2. THE OPTICAL FIX (ORB Alignment)
+                # 2. ORB Alignment
                 try:
                     # align_standard_images automatically fixes the shape AND the sub-pixel camera shifts
                     img_b = align_standard_images(img_a, img_b)
@@ -317,7 +353,7 @@ async def analyze(
                     print(f"ORB Alignment failed, falling back to simple resize: {e}")
                     img_b = cv2.resize(img_b, (shape_a[1], shape_a[0]), interpolation=cv2.INTER_LINEAR)
 
-            # ---> NEW SAR DETECTION & LEE FILTER BLOCK <---
+            # SAR DETECTION & LEE FILTER BLOCK
             # Check the original uploaded filenames from the 'images' list
             original_names = " ".join([img.filename.upper() for img in images if img.filename])
             if "S1" in original_names or "SAR" in original_names:
@@ -417,16 +453,18 @@ async def analyze(
     visual_evidence_url = f"/reports/{session_id}/evidence.png"
     report_url = f"/reports/{session_id}/download"
 
-    # Ensure the session folder exists (in case it wasn't created earlier)
     # Ensure the session folder exists
     session_folder = os.path.join("reports", session_id)
     os.makedirs(session_folder, exist_ok=True)
 
     # 1. Save the metadata as JSON
+    parsed_history.append({"role": "ai", "content": ai_answer}) # <-- ADD THIS to include the final answer
+
     record = {
         "query": query,
         "answer": ai_answer,
         "agent_execution_trace": agent_trace,
+        "chat_history": parsed_history # <-- ADD THIS
     }
     with open(os.path.join(session_folder, "data.json"), "w") as f:
         json.dump(record, f)
@@ -435,13 +473,19 @@ async def analyze(
     with open(os.path.join(session_folder, "source.img"), "wb") as f:
         f.write(processed_images_bytes[0])
 
-    # 3. --- NEW: Generate and save the PDF report directly to disk ---
-    img_buffer = io.BytesIO(processed_images_bytes[0]) if processed_images_bytes else None
+    evidence_path = os.path.join(session_folder, "evidence.png")
+    if os.path.exists(evidence_path):
+        with open(evidence_path, "rb") as f:
+            img_buffer = io.BytesIO(f.read())
+    else:
+        img_buffer = io.BytesIO(processed_images_bytes[0]) if processed_images_bytes else None
+
     pdf_buffer = generate_pdf_report(
-        query=query,
-        answer=ai_answer,
-        agent_execution_trace=agent_trace,
+        query=record["query"],
+        answer=record["answer"],
+        agent_execution_trace=record["agent_execution_trace"],
         image_source=img_buffer,
+        chat_history=record.get("chat_history", [])
     )
     
     pdf_buffer.seek(0)

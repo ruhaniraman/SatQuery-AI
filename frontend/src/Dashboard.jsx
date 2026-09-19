@@ -30,11 +30,19 @@ export default function SatQueryDashboard() {
   const fileInputBRef = useRef(null);
 
   const handleImageUpload = (e, setImage, setPreview) => {
-    const file = e.target.files[0];
-    if (file) {
-      setImage(file);
-      setPreview(URL.createObjectURL(file));
-    }
+    const files = Array.from(e.target.files);
+    if (!files || files.length === 0) return;
+
+    // 1. Replace the existing image
+    setImage(files[0]);
+    setPreview(URL.createObjectURL(files[0]));
+
+    // 2. Clear UI state, chat history, and old results
+    setChatHistory([]);
+    setBoxes([]);
+    setActiveLayer('imageA');
+    setExecutionResult(null);
+    setError(null);
   };
 
   const handleRemoveImageB = () => {
@@ -56,12 +64,15 @@ export default function SatQueryDashboard() {
     setIsExecuting(true);
     setError(null);
     setBoxes([]); // Clear old boxes on new scan
-    setChatHistory(prev => [...prev, { role: 'user', content: `[System]: Initiating ${adapterName} scan...` }]);
+    // Define the new history first so it can be sent instantly
+    const newHistory = [...chatHistory, { role: 'user', content: `[System]: Initiating ${adapterName} scan...` }];
+    setChatHistory(newHistory);
 
     const formData = new FormData();
-    formData.append('query', "Extract features."); // The backend will augment this invisibly
+    formData.append('query', "Extract features."); 
     formData.append('adapter', adapterName);
     formData.append('images', imageA);
+    formData.append('chat_history', JSON.stringify(newHistory)); // <-- Add this
 
     try {
       const response = await fetch(`${BACKEND_URL}/analyze`, {
@@ -107,7 +118,8 @@ export default function SatQueryDashboard() {
     }
 
     const submittedQuery = query;
-    setChatHistory(prev => [...prev, { role: 'user', content: submittedQuery }]);
+    const newHistory = [...chatHistory, { role: 'user', content: submittedQuery }];
+    setChatHistory(newHistory);
     setQuery('');
     
     setIsExecuting(true);
@@ -115,11 +127,12 @@ export default function SatQueryDashboard() {
 
     const formData = new FormData();
     formData.append('query', submittedQuery);
-    formData.append('adapter', 'general'); // Force base model processing
+    formData.append('adapter', 'general'); 
     formData.append('images', imageA);
     if (imageB && showImageB) {
       formData.append('images', imageB);
     }
+    formData.append('chat_history', JSON.stringify(newHistory));
 
     try {
       const response = await fetch(`${BACKEND_URL}/analyze`, {
