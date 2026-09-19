@@ -127,6 +127,12 @@ class SatQueryEngine:
             internal_prompt += " Are there distinct, green agricultural fields or cultivated crop rows in this image? Answer ONLY 'yes' or 'no'."
         # Single direct pass
         if active_adapter == "general":
+            internal_prompt = (
+                "[SYSTEM]: You are a precise geospatial analyst. You must follow this exact structure:\n"
+                "1. OBSERVATIONS: First, describe the visible building density, the exact color/state of the water, and the actual proportion of unbuilt bare land in the image.\n"
+                "2. ASSESSMENT: Answer the user's query strictly based on those physical observations. Do not offer generic advice.\n\n"
+                f"[USER QUERY]: {prompt}"
+            )
             context_manager = self.model.disable_adapter()
         else:
             self.model.set_adapter(active_adapter)

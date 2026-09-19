@@ -5,6 +5,7 @@ import shutil
 import cv2
 import torch
 import json
+import re
 import numpy as np
 from typing import Any, Dict, List, Optional
 
@@ -53,31 +54,102 @@ app.mount("/reports", StaticFiles(directory="reports"), name="reports")
 print("Initializing CDVQA Engine...")
 cd_engine = ChangeDetectionEngine()
 
-def shared_vram_caller(prompt: str, img_a_np: np.ndarray, img_b_np: np.ndarray) -> str:
+def shared_vram_caller(
+    prompt: str, 
+    img_a_np: np.ndarray, 
+    img_b_np: Optional[np.ndarray] = None, 
+    img_c_np: Optional[np.ndarray] = None
+) -> str:
     print("VLM Bridge Activated: Processing multi-image prompt...")
     
     pil_a = Image.fromarray(img_a_np)
-    pil_b = Image.fromarray(img_b_np)
+    
+    # Check if a second distinct image was provided (e.g. not a duplicate or stitched)
+    is_two_distinct_images = img_b_np is not None and not np.array_equal(img_a_np, img_b_np)
 
-    messages = [{
-        "role": "user",
-        "content": [
+    if is_two_distinct_images:
+        pil_b = Image.fromarray(img_b_np)
+        content = [
+            {"type": "text", "text": "### BEFORE IMAGE (Historical Capture):\n"},
             {"type": "image", "image": pil_a},
+            {"type": "text", "text": "\n### AFTER IMAGE (Recent Capture):\n"},
             {"type": "image", "image": pil_b},
-            {"type": "text", "text": prompt}
         ]
-    }]
+        images_list = [pil_a, pil_b]
+    else:
+        # Single image mode (Perfect for the stitched side-by-side array)
+        content = [{"type": "image", "image": pil_a}]
+        images_list = [pil_a]
+
+    # Append the heatmap overlay if it exists
+    if img_c_np is not None:
+        pil_c = Image.fromarray(img_c_np)
+        content.extend([
+            {"type": "text", "text": "\n### DETECTED CHANGE HIGHLIGHTS (Overlay):\n"},
+            {"type": "image", "image": pil_c}
+        ])
+        images_list.append(pil_c)
+
+    # Append the injected telemetry and user query
+    content.append({"type": "text", "text": f"\n### USER QUESTION:\n{prompt}"})
+
+    messages = [{"role": "user", "content": content}]
 
     text = agent.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = agent.processor(text=[text], images=[pil_a, pil_b], padding=True, return_tensors="pt").to("cuda")
+    inputs = agent.processor(
+        text=[text], 
+        images=images_list, 
+        padding=True, 
+        return_tensors="pt"
+    ).to("cuda")
 
     with torch.no_grad():
-        # BYPASS LORAS FOR MULTI-IMAGE TASKS
         with agent.model.disable_adapter():
             output_ids = agent.model.generate(**inputs, max_new_tokens=1024)
 
     generated_ids = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, output_ids)]
     return agent.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+def align_standard_images(img1: np.ndarray, img2: np.ndarray) -> np.ndarray:
+    """Uses ORB to find matching features and performs a safe 2D affine warp."""
+    gray1 = cv2.cvtColor(img1, cv2.COLOR_RGB2GRAY)
+    gray2 = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY)
+    
+    orb = cv2.ORB_create(nfeatures=5000)
+    kp1, des1 = orb.detectAndCompute(gray1, None)
+    kp2, des2 = orb.detectAndCompute(gray2, None)
+    
+    # If no features found, fallback safely
+    if des1 is None or des2 is None:
+        return cv2.resize(img2, (img1.shape[1], img1.shape[0]))
+        
+    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = matcher.match(des1, des2)
+    matches = sorted(matches, key=lambda x: x.distance)
+    
+    keep = int(len(matches) * 0.15)
+    matches = matches[:keep]
+    
+    points1 = np.zeros((len(matches), 2), dtype=np.float32)
+    points2 = np.zeros((len(matches), 2), dtype=np.float32)
+    for i, match in enumerate(matches):
+        points1[i, :] = kp1[match.queryIdx].pt
+        points2[i, :] = kp2[match.trainIdx].pt
+        
+    # --- THE FIX ---
+    # Use estimateAffinePartial2D instead of findHomography.
+    # This prevents the "hyperspace stretch" by locking the transform to 2D only.
+    transform_matrix, inliers = cv2.estimateAffinePartial2D(points2, points1, cv2.RANSAC)
+    
+    height, width = img1.shape[:2]
+    
+    if transform_matrix is not None:
+        # Use warpAffine instead of warpPerspective
+        aligned_img2 = cv2.warpAffine(img2, transform_matrix, (width, height))
+        return aligned_img2
+    else:
+        print("Affine alignment failed (no valid matrix), falling back to resize.")
+        return cv2.resize(img2, (width, height))
 
 # --- Schema Definitions ---
 class AnalysisResponse(BaseModel):
@@ -218,10 +290,32 @@ async def analyze(
                 
                 temp_paths.append(aligned_path)
             else:
-                print("Standard images detected. Skipping alignment...")
-                # Member 3's code expects OpenCV numpy arrays
+                print("Standard images detected. Checking dimensions and aligning...")
                 img_a = cv2.cvtColor(cv2.imread(temp_paths[0]), cv2.COLOR_BGR2RGB)
                 img_b = cv2.cvtColor(cv2.imread(temp_paths[1]), cv2.COLOR_BGR2RGB)
+
+                shape_a = img_a.shape[:2]
+                shape_b = img_b.shape[:2]
+                
+                # 1. THE GATEKEEPER (Tolerance Check)
+                if shape_a != shape_b:
+                    height_diff = abs(shape_a[0] - shape_b[0])
+                    width_diff = abs(shape_a[1] - shape_b[1])
+                    
+                    if height_diff > 10 or width_diff > 10:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Major shape mismatch ({shape_a} vs {shape_b}). Standard images must be the same size."
+                        )
+                    print(f"Minor shape mismatch ({shape_a} vs {shape_b}). Proceeding to optical alignment...")
+
+                # 2. THE OPTICAL FIX (ORB Alignment)
+                try:
+                    # align_standard_images automatically fixes the shape AND the sub-pixel camera shifts
+                    img_b = align_standard_images(img_a, img_b)
+                except Exception as e:
+                    print(f"ORB Alignment failed, falling back to simple resize: {e}")
+                    img_b = cv2.resize(img_b, (shape_a[1], shape_a[0]), interpolation=cv2.INTER_LINEAR)
 
             # ---> NEW SAR DETECTION & LEE FILTER BLOCK <---
             # Check the original uploaded filenames from the 'images' list
@@ -243,7 +337,9 @@ async def analyze(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal pipeline error: Image array validation failed before AI processing."
                 )
-            # Pass the images AND our custom VRAM bridge function
+
+            # Route to our refactored, modular Hybrid Engine
+            print("Routing to Hybrid CDVQA Specialist via Agent Manager...")
             cd_result = cd_engine.detect(
                 image_a=img_a,
                 image_b=img_b,
@@ -251,25 +347,21 @@ async def analyze(
                 user_query=query
             )
             
-            # Extract the data Member 3's engine generated
             ai_answer = cd_result.explanation
 
             session_folder = os.path.join("reports", session_id)
             os.makedirs(session_folder, exist_ok=True)
+            
+            # Save the annotated overlay (Image B + Green Bounding Boxes)
             evidence_path = os.path.join(session_folder, "evidence.png")
-            if hasattr(cd_result, "change_mask") and cd_result.change_mask is not None:
-                cv2.imwrite(evidence_path, cd_result.change_mask)
-            else:
-                # Fallback save image B if mask is embedded differently
-                cv2.imwrite(evidence_path, cv2.cvtColor(img_b, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(evidence_path, cd_result.overlay_image)
             
             agent_trace = {
                 "pipeline_id": session_id,
-                "nodes_traversed": ["InputPreprocessor", "ChangeMaskSegmenter", "ChangeMetrics", "Qwen2-VL-Bridge"],
+                "nodes_traversed": ["InputPreprocessor", "Hybrid-CDVQA-Engine", "Qwen2-VL-Bridge"],
                 "telemetry": {
-                    "change_percentage": round(cd_result.change_percentage, 2),
-                    "severity": cd_result.overall_severity,
-                    "ssim_score": round(cd_result.ssim_score, 4)
+                    "method": "Hybrid VLM + Spatial Analysis",
+                    "major_regions_detected": cd_result.major_regions_detected
                 }
             }
         elif task == TaskType.OPTICAL_SAR_FUSION:
@@ -301,7 +393,7 @@ async def analyze(
             
             print("Fusion complete. Passing False-Color Composite to VLM...")
             
-            ai_answer = shared_vram_caller(specialized_prompt, composite_img, composite_img)
+            ai_answer = shared_vram_caller(specialized_prompt, composite_img)
             
             # Save composite image as the visual evidence artifact
             session_folder = os.path.join("reports", session_id)
