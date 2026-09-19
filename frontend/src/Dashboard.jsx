@@ -291,7 +291,7 @@ export default function SatQueryDashboard() {
                 className={`flex items-center gap-2 border border-dashed rounded-lg px-3 py-2 transition cursor-pointer bg-black/30 backdrop-blur-sm shrink-0 ${imageA ? 'border-blue-500 text-blue-300' : 'border-white/20 hover:border-blue-500 text-slate-200'}`}
               >
                 <ImageIcon size={14} className={imageA ? "text-blue-400" : "text-slate-300"} />
-                <span className="text-xs whitespace-nowrap">{imageA ? imageA.name : 'Image A · Optical/SAR'}</span>
+                <span className="text-xs whitespace-nowrap">{imageA ? imageA.name : 'Image A · Optical'}</span>
               </div>
 
               {!showImageB ? (
@@ -317,7 +317,7 @@ export default function SatQueryDashboard() {
                     className={`flex items-center gap-2 border border-dashed rounded-lg px-3 py-2 transition cursor-pointer bg-black/30 backdrop-blur-sm ${imageB ? 'border-blue-500 text-blue-300' : 'border-white/20 hover:border-blue-500 text-slate-200'}`}
                   >
                     <ImageIcon size={14} className={imageB ? "text-blue-400" : "text-slate-300"} />
-                    <span className="text-xs whitespace-nowrap">{imageB ? imageB.name : 'Image B · Optical/SAR'}</span>
+                    <span className="text-xs whitespace-nowrap">{imageB ? imageB.name : 'Image B · SAR'}</span>
                   </div>
                   <button
                     type="button"
@@ -347,14 +347,14 @@ export default function SatQueryDashboard() {
                     disabled={!imageA}
                     className={`px-2.5 py-1 rounded transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${activeLayer === 'imageA' ? 'bg-blue-600/90 text-slate-950 font-medium' : 'bg-black/40 hover:bg-black/60 text-slate-200'}`}
                   >
-                    Optical (A)
+                    Image A / Optical
                   </button>
                   <button
                     onClick={() => setActiveLayer('imageB')}
                     disabled={!imageB || !showImageB}
                     className={`px-2.5 py-1 rounded transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${activeLayer === 'imageB' ? 'bg-blue-600/90 text-slate-950 font-medium' : 'bg-black/40 hover:bg-black/60 text-slate-200'}`}
                   >
-                    SAR (B)
+                    Image B / SAR
                   </button>
                   <button
                     onClick={() => setActiveLayer('evidence')}
