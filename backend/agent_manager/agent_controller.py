@@ -1,16 +1,32 @@
+import json
 import os
+import threading
 import torch
-import ast
+import numpy as np
 from PIL import Image
 from io import BytesIO
 from contextlib import nullcontext
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, BitsAndBytesConfig
 from peft import PeftModel
 from geospatial_preprocessing.geotiff_loader import load_and_standardize_image
+from agent_manager.grid_scan import DEFAULT_YES_THRESHOLD, merge_positive_tiles, tile_windows, yes_probability
+from agent_manager.prompts import DEFAULT_MAX_NEW_TOKENS, build_general_messages
+
+# Cap on pixels per image handed to Qwen2-VL (each 28x28 patch is one visual token, so this is
+# ~1280 tokens). Without it a large GeoTIFF or the stitched before|after image can OOM a small
+# GPU; the processor downsizes anything bigger. A starting guess, not a tuned value.
+MAX_PIXELS = 1280 * 28 * 28
+
 
 class SatQueryEngine:
     def __init__(self, base_model_id="Qwen/Qwen2-VL-2B-Instruct", adapters_base_dir="models/adapters"):
+        # One lock guards every use of the model. The active LoRA adapter (set_adapter /
+        # disable_adapter) is global state on the shared model object, so two requests
+        # interleaving would silently run under each other's adapter.
+        self.lock = threading.Lock()
+
         print("Initializing base Qwen2-VL-2B and adapters...")
+        self.base_model_id = base_model_id
         
         # Ensure correct pathing relative to the backend directory
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,7 +40,9 @@ class SatQueryEngine:
             bnb_4bit_compute_dtype=torch.float16
         )
 
-        self.processor = AutoProcessor.from_pretrained(base_model_id)
+        self.processor = AutoProcessor.from_pretrained(base_model_id, max_pixels=MAX_PIXELS)
+        # Batched last-token scoring needs the real final token at index -1 in every row
+        self.processor.tokenizer.padding_side = "left"
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
             base_model_id,
             quantization_config=bnb_config,
@@ -43,75 +61,80 @@ class SatQueryEngine:
         self.model.load_adapter(mine_path, adapter_name="mining")
         print("All domain LoRAs attached successfully!")
 
-    def route_intent(self, prompt: str, has_image: bool) -> str:
-        """Determines which adapter to activate based on strict command heuristics."""
-        if not has_image:
-            return "general"
+        # Facts about each adapter, read from the files that were actually loaded (for the audit trace).
+        # The adapter files do not record what data they were trained on, so nothing is claimed.
+        self.adapter_info = {}
+        for name in ("agriculture", "deforestation", "mining"):
+            try:
+                with open(os.path.join(adapters_base_dir, name, "adapter_config.json"), encoding="utf-8") as f:
+                    cfg = json.load(f)
+                self.adapter_info[name] = {
+                    "base_model": cfg.get("base_model_name_or_path"),
+                    "lora_rank": cfg.get("r"),
+                    "lora_alpha": cfg.get("lora_alpha"),
+                }
+            except Exception:
+                self.adapter_info[name] = {}
 
-        text = prompt.lower()
-        
-        # 1. Define strict command verbs that indicate a need for technical extraction
-        command_verbs = ["classify", "detect", "tag", "assess", "extract", "estimate", "evaluate", "threshold"]
-        
-        # 2. Check if the user is explicitly asking for a strict technical task
-        has_command = any(verb in text for verb in command_verbs)
-        
-        # 3. Only route to specialized LoRAs if a command verb is present
-        if has_command:
-            if any(k in text for k in ["agriculture", "crop", "farm", "arable", "pasture"]):
-                return "agriculture"
-            elif any(k in text for k in ["deforestation", "logging", "clearing", "canopy loss"]):
-                return "deforestation"
-            elif any(k in text for k in ["mine", "mining", "quarry", "pit", "coalfield", "extraction"]):
-                return "mining"
-                
-        # 4. Default to the conversational base model for everything else
-        return "general"
+    def _yes_no_token_ids(self):
+        """First-token ids for yes-like and no-like answers ("yes"/"Yes"/" yes"..., same for no)."""
+        if getattr(self, "_yn_ids", None) is None:
+            tok = self.processor.tokenizer
+            def ids(words):
+                out = set()
+                for w in words:
+                    enc = tok.encode(w, add_special_tokens=False)
+                    if enc:
+                        out.add(enc[0])
+                return sorted(out)
+            self._yn_ids = (ids(["yes", "Yes", " yes", " Yes", "YES"]), ids(["no", "No", " no", " No", "NO"]))
+        return self._yn_ids
 
-    def _grid_classification(self, img, internal_prompt, grid_size=(4, 4)):
-        """Splits image into a grid and asks the AI a strict Yes/No for each tile."""
+    def _grid_classification(self, img, internal_prompt, grid_size=(4, 4),
+                             threshold=DEFAULT_YES_THRESHOLD, batch_size=4):
+        """Asks the model a yes/no question about every grid cell and returns merged region boxes.
+
+        Each cell is scored from the next-token logits (P(yes) vs P(no)) in ONE forward pass per
+        batch, rather than free-text generation per cell, so the threshold is tunable and the 16
+        cells cost 4 batched passes instead of 16 sequential generate() calls. Cells are shown with
+        surrounding context, and edge-adjacent positive cells are merged into a single region.
+        """
         rows, cols = grid_size
         width, height = img.size
-        tile_w = width // cols
-        tile_h = height // rows
-        all_global_boxes = []
+        windows = tile_windows(width, height, rows, cols)
+        yes_ids, no_ids = self._yes_no_token_ids()
 
-        for row in range(rows):
-            for col in range(cols):
-                left = col * tile_w
-                top = row * tile_h
-                right = (col + 1) * tile_w
-                bottom = (row + 1) * tile_h
-                tile_img = img.crop((left, top, right, bottom))
-                
-                messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": internal_prompt}]}]
-                text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                
-                # Keep max_new_tokens incredibly low because we only want a 1-word answer
-                inputs = self.processor(text=[text_input], images=[tile_img], return_tensors="pt", padding=True).to("cuda")
-                
-                with torch.no_grad():
-                    output_ids = self.model.generate(**inputs, max_new_tokens=10) 
-                
-                generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
-                raw_response = self.processor.decode(generated_ids, skip_special_tokens=True).strip().lower()
-                
-                # If the AI says 'yes', Python draws the box matching the tile exactly
-                if "yes" in raw_response:
-                    global_ymin = row / rows
-                    global_xmin = col / cols
-                    global_ymax = (row + 1) / rows
-                    global_xmax = (col + 1) / cols
-                    all_global_boxes.append([
-                        round(global_ymin, 3), 
-                        round(global_xmin, 3), 
-                        round(global_ymax, 3), 
-                        round(global_xmax, 3)
-                    ])
-                    
-        return all_global_boxes
+        messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": internal_prompt}]}]
+        text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-    def query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = 256) -> str:
+        probs = np.zeros(len(windows), dtype=np.float64)
+        for start in range(0, len(windows), batch_size):
+            chunk = windows[start:start + batch_size]
+            tiles = [img.crop(box) for _, _, box in chunk]
+            inputs = self.processor(
+                text=[text_input] * len(tiles), images=tiles, return_tensors="pt", padding=True
+            ).to(self.model.device)
+            with torch.no_grad():
+                try:
+                    out = self.model(**inputs, logits_to_keep=1)   # only the last position is needed
+                except TypeError:
+                    out = self.model(**inputs)
+            # Left padding (set in __init__) puts the real last token at index -1 for every row
+            last = out.logits[:, -1, :].float().cpu().numpy()
+            probs[start:start + len(chunk)] = yes_probability(last, yes_ids, no_ids)
+
+        positive = np.zeros((rows, cols), dtype=bool)
+        for (r, c, _), p in zip(windows, probs):
+            positive[r, c] = p >= threshold
+        print("Grid P(yes):\n" + np.array2string(probs.reshape(rows, cols), precision=2))
+        return merge_positive_tiles(positive)
+
+    def query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None) -> str:
+        """Thread-safe entry point: only one request may switch adapters and generate at a time."""
+        with self.lock:
+            return self._query(prompt, image_path, image_bytes, explicit_adapter, max_new_tokens, modality, chat_history)
+
+    def _query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None) -> str:
         has_image = (image_path is not None and os.path.exists(image_path)) or (image_bytes is not None)
         
         # Override with the UI button's choice
@@ -127,12 +150,6 @@ class SatQueryEngine:
             internal_prompt += " Are there distinct, green agricultural fields or cultivated crop rows in this image? Answer ONLY 'yes' or 'no'."
         # Single direct pass
         if active_adapter == "general":
-            internal_prompt = (
-                "[SYSTEM]: You are a precise geospatial analyst. You must follow this exact structure:\n"
-                "1. OBSERVATIONS: First, describe the visible building density, the exact color/state of the water, and the actual proportion of unbuilt bare land in the image.\n"
-                "2. ASSESSMENT: Answer the user's query strictly based on those physical observations. Do not offer generic advice.\n\n"
-                f"[USER QUERY]: {prompt}"
-            )
             context_manager = self.model.disable_adapter()
         else:
             self.model.set_adapter(active_adapter)
@@ -141,7 +158,7 @@ class SatQueryEngine:
         # Load image (Make sure to pass 'internal_prompt' instead of the raw user prompt!)
         if has_image:
             if image_path:
-                img_array, metadata = load_and_standardize_image(image_path)
+                img_array, metadata = load_and_standardize_image(image_path, modality)
                 img = Image.fromarray(img_array)
             elif image_bytes:
                 img = Image.open(BytesIO(image_bytes)).convert("RGB")
@@ -158,6 +175,10 @@ class SatQueryEngine:
             messages = [{"role": "user", "content": internal_prompt}]
             images = None
 
+        if active_adapter == "general":
+            # Real system role, prior turns (so follow-ups have context), then the current question
+            messages = build_general_messages(prompt, has_image, chat_history, modality)
+
         if active_adapter in ["mining", "deforestation", "agriculture"] and has_image:
             # 4x4 Grid = 16 precise squares. The AI answers Yes/No for each square.
             global_boxes = self._grid_classification(img, internal_prompt, grid_size=(4, 4))
@@ -173,7 +194,7 @@ class SatQueryEngine:
             return str(global_boxes)
 
         text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = self.processor(text=[text_input], images=images, return_tensors="pt", padding=True).to("cuda")
+        inputs = self.processor(text=[text_input], images=images, return_tensors="pt", padding=True).to(self.model.device)
 
         with torch.no_grad():
             with context_manager:
@@ -194,5 +215,18 @@ class SatQueryEngine:
                 
         return raw_response
 
-# Initialize a global instance so FastAPI can import it
-agent = SatQueryEngine()
+# The engine is created by load_agent() (called from the FastAPI lifespan), never at import time,
+# so a missing adapter or failed model download cannot crash the app before it starts serving.
+_agent = None
+
+
+def load_agent() -> SatQueryEngine:
+    global _agent
+    if _agent is None:
+        _agent = SatQueryEngine()
+    return _agent
+
+
+def get_agent():
+    """The loaded engine, or None if it has not been (or could not be) loaded."""
+    return _agent

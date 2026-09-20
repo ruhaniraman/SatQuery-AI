@@ -232,3 +232,5 @@ reports/
 # Ignore temporary image processing artifacts
 temp_*
 temp_aligned_*
+
+CLAUDE.md

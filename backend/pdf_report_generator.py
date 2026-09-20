@@ -1,21 +1,71 @@
 import io
 import json
-from datetime import datetime
+import textwrap
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas as _canvas
 from reportlab.platypus import (
     HRFlowable,
     Image,
     Paragraph,
+    Preformatted,
     SimpleDocTemplate,
     Spacer,
     Table,
     TableStyle,
 )
+
+
+def _safe(text: Any) -> str:
+    """Make arbitrary text safe for ReportLab's Paragraph.
+
+    Paragraph parses XML-like markup, so a raw '<', '>' or '&' in model output (e.g. "cover < 10%")
+    raises a parse error. Escape first, THEN turn newlines into <br/> (otherwise the tag itself
+    would be escaped) so multi-line answers keep their structure.
+    """
+    text = "" if text is None else str(text)
+    return escape(text).replace("\r\n", "\n").replace("\n", "<br/>")
+
+
+class _NumberedCanvas(_canvas.Canvas):
+    """Draws a footer with the real page number and page count on every page. The total is only
+    known once the whole document is laid out, so pages are held back until save()."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_pages = []
+
+    def showPage(self):
+        self._saved_pages.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total = len(self._saved_pages)
+        for state in self._saved_pages:
+            self.__dict__.update(state)
+            self.setFont("Helvetica", 7)
+            self.setFillColor(colors.HexColor("#64748B"))
+            self.drawCentredString(
+                letter[0] / 2, 18,
+                f"Confidential Audit Record \u2022 Automated Agent Execution Pipeline \u2022 Page {self._pageNumber} of {total}",
+            )
+            super().showPage()
+        super().save()
+
+
+def _report_status(trace: Dict[str, Any]) -> str:
+    """Status shown in the header, taken from what the pipeline reported. Nothing here checks the
+    answer for correctness, so the word 'verified' is never used."""
+    status = str(trace.get("execution_status") or "not reported").upper()
+    if trace.get("warnings"):
+        status += " WITH WARNINGS"
+    return status
 
 
 def generate_pdf_report(
@@ -32,7 +82,7 @@ def generate_pdf_report(
     doc = SimpleDocTemplate(
         target,
         pagesize=letter,
-        leftMargin=28, rightMargin=28, topMargin=28, bottomMargin=28,
+        leftMargin=28, rightMargin=28, topMargin=28, bottomMargin=40,
     )
 
     styles = getSampleStyleSheet()
@@ -55,10 +105,10 @@ def generate_pdf_report(
     story = []
 
     # --- Header Block ---
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     header_data = [[
         Paragraph("<b>SATQUERY AI SYSTEM</b><br/><font size=9 color='#2563EB'>Audit & Inspection Report</font>", styles["ReportTitle"]),
-        Paragraph(f"Generated: {timestamp}<br/>Status: <b>VERIFIED</b>", styles["ReportMeta"]),
+        Paragraph(f"Generated: {timestamp}<br/>Status: <b>{_safe(_report_status(agent_execution_trace))}</b>", styles["ReportMeta"]),
     ]]
     header_table = Table(header_data, colWidths=[3.2 * inch, 4.3 * inch])
     header_table.setStyle(TableStyle([
@@ -76,18 +126,23 @@ def generate_pdf_report(
     if chat_history and len(chat_history) > 0:
         for msg in chat_history:
             role = msg.get("role", "user").upper()
-            text = msg.get("text", msg.get("content", ""))
-            style = styles["UserMsg"] if role == "USER" else styles["AssistantMsg"]
-            prefix = "<b>USER:</b> " if role == "USER" else "<b>AI ASSISTANT:</b> "
+            text = _safe(msg.get("text", msg.get("content", "")))
+            if role == "SYSTEM":
+                # Pipeline/status entries (e.g. "Initiating mining scan...") are not something the user said
+                style, prefix = styles["LabelText"], "<b>SYSTEM:</b> "
+            elif role == "USER":
+                style, prefix = styles["UserMsg"], "<b>USER:</b> "
+            else:
+                style, prefix = styles["AssistantMsg"], "<b>AI ASSISTANT:</b> "
             summary_data.append([Paragraph(f"{prefix}{text}", style)])
     else:
         # Fallback to single prompt/answer if no history is provided
         summary_data = [
             [Paragraph("USER QUERY", styles["LabelText"])],
-            [Paragraph(f"<i>\"{query}\"</i>", styles["BodyDark"])],
+            [Paragraph(f"<i>\"{_safe(query)}\"</i>", styles["BodyDark"])],
             [Spacer(1, 4)],
             [Paragraph("SYNTHESIZED ANSWER / INFERENCE", styles["LabelText"])],
-            [Paragraph(answer, styles["BodyDark"])],
+            [Paragraph(_safe(answer), styles["BodyDark"])],
         ]
 
     summary_table = Table(summary_data, colWidths=[7.5 * inch])
@@ -115,15 +170,28 @@ def generate_pdf_report(
     else:
         left_elements.append(Paragraph("<i>No visual evidence supplied.</i>", styles["BodyDark"]))
 
-    trace_pretty = json.dumps(agent_execution_trace, indent=2)
-    if len(trace_pretty) > 1200:
-        trace_pretty = trace_pretty[:1197] + "..."
-    
-    trace_escaped = trace_pretty.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>").replace(" ", "&nbsp;")
+    # Temporal-order statement gets its own paragraph (the JSON dump below is length-truncated)
+    trace_for_dump = json.loads(json.dumps(agent_execution_trace))
+    temporal = (trace_for_dump.get("telemetry") or {}).pop("temporal_order", None)
+    summary_lines = []
+    if trace_for_dump.get("task"):
+        summary_lines.append(f"<b>Task:</b> {_safe(trace_for_dump['task'])} ({_safe(trace_for_dump.get('routing', 'rule-based'))} routing: {_safe(trace_for_dump.get('routing_reason', ''))})")
+    if trace_for_dump.get("nodes_traversed"):
+        summary_lines.append("<b>Stages run:</b> " + _safe(" \u2192 ".join(trace_for_dump["nodes_traversed"])))
+    model_used = (trace_for_dump.get("telemetry") or {}).get("model_used")
+    if model_used:
+        summary_lines.append(f"<b>Model:</b> {_safe(model_used)}")
+    if trace_for_dump.get("validation_status"):
+        summary_lines.append(f"<b>Validation:</b> {_safe(trace_for_dump['validation_status'])}")
+    for w in trace_for_dump.get("warnings") or []:
+        summary_lines.append(f"<b>Warning:</b> {_safe(w)}")
+
     right_elements = [
-        Paragraph("<b>Execution Trace (Telemetry Log)</b>", styles["LabelText"]),
+        Paragraph("<b>Run Summary</b>", styles["LabelText"]),
         Spacer(1, 4),
-        Paragraph(trace_escaped, styles["TraceCode"]),
+        *[item for line in summary_lines for item in (Paragraph(line, styles["BodyDark"]), Spacer(1, 3))],
+        *([Paragraph("<b>Temporal order:</b> " + _safe(temporal.get("summary", "")), styles["BodyDark"]), Spacer(1, 4)]
+          if isinstance(temporal, dict) and temporal.get("summary") else []),
     ]
 
     col_data = [[left_elements, right_elements]]
@@ -142,13 +210,17 @@ def generate_pdf_report(
     story.append(two_col_table)
     story.append(Spacer(1, 8))
 
-    footer_text = Paragraph(
-        "Confidential Audit Record • Automated Agent Execution Pipeline • Page 1 of 1",
-        styles["ReportMeta"],
-    )
-    story.append(footer_text)
+    # Full trace, never truncated: audit data must not be silently cut. Preformatted text flows
+    # across pages, so a long trace just makes the report longer.
+    story.append(Paragraph("FULL EXECUTION TRACE", styles["SectionHeading"]))
+    trace_lines = []
+    for line in json.dumps(trace_for_dump, indent=2, ensure_ascii=False).split("\n"):
+        indent = len(line) - len(line.lstrip(" "))
+        trace_lines.extend(textwrap.wrap(line, width=118, subsequent_indent=" " * (indent + 4),
+                                         drop_whitespace=False, replace_whitespace=False) or [""])
+    story.append(Preformatted("\n".join(trace_lines), styles["TraceCode"]))
 
-    doc.build(story)
+    doc.build(story, canvasmaker=_NumberedCanvas)
     
     if not output_path:
         buffer.seek(0)
