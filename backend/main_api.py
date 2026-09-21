@@ -1,17 +1,17 @@
 import asyncio
 import io
 import os
+import re
 import uuid
 import shutil
 import cv2
 import torch
 import json
-import ast
 import numpy as np
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,7 +36,8 @@ from agent_manager.prompts import DEFAULT_MAX_NEW_TOKENS, describe_first_enabled
 from agent_manager.scene_stats import compute_scene_stats, format_scene_stats
 from agent_manager.scan_compare import summarize_scan_change
 from change_detection.change_report import compare_report_enabled, lora_compare_enabled
-from agent_manager.grid_scan import DEFAULT_CONTEXT, DEFAULT_YES_THRESHOLD
+from agent_manager.grid_scan import DEFAULT_CONTEXT, SCAN_YES_THRESHOLD
+from agent_manager.scan_report import build_scan_summary, render_scan_evidence, scan_answer_text
 
 from fusion.sar_optical_fusion import execute_optical_sar_fusion
 
@@ -99,6 +100,11 @@ app.mount("/reports", StaticFiles(directory="reports"), name="reports")
 # Sensor type of each uploaded image; chosen by the user in the UI.
 VALID_MODALITIES = {"optical", "sar"}
 VALID_ADAPTERS = {"general", "mining", "deforestation", "agriculture"}
+
+# Longest side of a browser preview. Browsers cannot draw TIFF/GeoTIFF, and a raw scene can be thousands of pixels wide.
+PREVIEW_MAX_SIDE = 2048
+# Session folders are named by uuid4 only; anything else is rejected before it can touch the filesystem.
+_SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 
 def strip_markdown_asterisks(text):
@@ -185,6 +191,7 @@ class AnalysisResponse(BaseModel):
     visual_evidence_url: str = Field(..., description="Endpoint or URL to retrieve the visual inspection artifact")
     report_download_url: Optional[str] = Field(None, description="Direct URL to download the single-page audit PDF")
     report_error: Optional[str] = Field(None, description="Why the PDF could not be produced, when report_download_url is null")
+    scan: Optional[dict] = Field(None, description="Feature scans only: headline, confidence level, numbered findings (box, position, score) and the 4x4 score grid")
 
 
 # --- Analysis Endpoint ---
@@ -300,6 +307,8 @@ def analyze(
                 date=acq.iso if acq else None, date_source=acq.source if acq else None,
             ))
 
+        scan_summary = None   # set by a feature scan; goes into the response, data.json and the PDF
+
         ## 2. --- TASK ROUTING ---
         if len(image_inputs) == 2:
             modality_a = image_inputs[0].modality
@@ -345,34 +354,18 @@ def analyze(
 
             scene_stats = compute_scene_stats(img_array, modality_a) if adapter == "general" else None
             scene_facts = format_scene_stats(scene_stats)
-            ai_answer = engine.query(prompt=query, image_path=single_img_path, explicit_adapter=adapter, modality=modality_a,
-                                    chat_history=parsed_history, scene_facts=scene_facts)
+            if adapter == "general":
+                ai_answer = engine.query(prompt=query, image_path=single_img_path, explicit_adapter=adapter, modality=modality_a,
+                                        chat_history=parsed_history, scene_facts=scene_facts)
+            else:
+                # Feature scan: score the 16 tiles, then say what was found and draw it (tint + outlines + pins)
+                probs = engine.scan_scores(img_array, adapter, prompt=query)
+                print("Grid P(yes):" + chr(10) + np.array2string(np.asarray(probs), precision=2))
+                scan_summary = build_scan_summary(adapter, probs, SCAN_YES_THRESHOLD)
+                ai_answer = scan_answer_text(scan_summary)
+                annotated_img = render_scan_evidence(img_array, probs, scan_summary)
+                cv2.imwrite(evidence_img_path, cv2.cvtColor(annotated_img, cv2.COLOR_RGB2BGR))
 
-            if isinstance(ai_answer, str) and ai_answer.strip().startswith("[") and ai_answer.strip().endswith("]"):
-                try:
-                    boxes = ast.literal_eval(ai_answer.strip())
-                    if isinstance(boxes, list) and len(boxes) > 0 and isinstance(boxes[0], list):
-                        annotated_img = img_array.copy()
-                        h, w = annotated_img.shape[:2]
-                        overlay = annotated_img.copy()
-                        
-                        for box in boxes:
-                            ymin, xmin, ymax, xmax = box
-                            x1, y1 = int(xmin * w), int(ymin * h)
-                            x2, y2 = int(xmax * w), int(ymax * h)
-                            
-                            # Semi-transparent red fill and solid red border
-                            cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 0), thickness=-1)
-                            cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (255, 0, 0), thickness=3)
-
-                        annotated_img = cv2.addWeighted(overlay, 0.35, annotated_img, 0.65, 0)
-                        cv2.imwrite(evidence_img_path, cv2.cvtColor(annotated_img, cv2.COLOR_RGB2BGR))
-                        
-                        # Replace raw coordinates with readable text for the report
-                        ai_answer = f"Scan complete. Found {len(boxes)} potential region(s)."
-                except Exception as err:
-                    print(f"Box parsing error: {err}")
-            
             is_grid_scan = adapter != "general"
             telemetry = {
                 **_model_telemetry(adapter if is_grid_scan else None),
@@ -380,7 +373,7 @@ def analyze(
             }
             if is_grid_scan:
                 telemetry["inference"] = "4x4 tile yes/no scan, scored from first-token logits"
-                telemetry["grid_yes_threshold"] = DEFAULT_YES_THRESHOLD
+                telemetry["grid_yes_threshold"] = SCAN_YES_THRESHOLD
                 telemetry["grid_tile_context"] = DEFAULT_CONTEXT
             else:
                 telemetry["inference"] = (
@@ -611,6 +604,7 @@ def analyze(
         "answer": ai_answer,
         "agent_execution_trace": agent_trace.model_dump(mode="json"),
         "chat_history": parsed_history,
+        "scan": scan_summary,
     }
     with open(os.path.join(session_folder, "data.json"), "w") as f:
         json.dump(record, f)
@@ -634,6 +628,7 @@ def analyze(
             agent_execution_trace=record["agent_execution_trace"],
             image_source=img_buffer,
             chat_history=record.get("chat_history", []),
+            scan=scan_summary,
         )
         pdf_buffer.seek(0)
         with open(os.path.join(session_folder, "report.pdf"), "wb") as f:
@@ -650,4 +645,115 @@ def analyze(
         visual_evidence_url=visual_evidence_url,
         report_download_url=report_url,
         report_error=report_error,
+        scan=scan_summary,
     )
+
+# --- Small helper endpoints used by the dashboard ---
+
+@app.get("/health", summary="Is the backend up, and is the model loaded?")
+def health():
+    loaded = get_agent() is not None
+    return {
+        "status": "ok",
+        "model_loaded": loaded,
+        "model_error": None if loaded else getattr(app.state, "model_error", None),
+    }
+
+
+@app.post("/preview", summary="Browser-safe PNG of an uploaded image (browsers cannot draw TIFF/GeoTIFF)")
+def preview(
+    modality: str = Form("optical", description="Sensor type: optical | sar (SAR is despeckled like an analysis run)"),
+    image: UploadFile = File(..., description="The image to preview"),
+):
+    """Runs the file through the same loader the analysis uses, so the preview is what the model will
+    see (percentile stretch, SAR despeckle), scaled down to at most PREVIEW_MAX_SIDE pixels."""
+    modality = modality.lower()
+    if modality not in VALID_MODALITIES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid modality '{modality}'. Choose one of: optical, sar.")
+    if not image.filename:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The image needs a filename.")
+    try:
+        content = read_limited(image.file, max_upload_bytes())
+    except UploadTooLarge as e:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e))
+    kind = detect_image_kind(content)
+    if kind is None:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=f"'{image.filename}' is not a valid JPEG, PNG, WebP, or TIFF image.")
+
+    if kind == "tiff":
+        temp_path = f"temp_preview_{uuid.uuid4()}.tif"
+        try:
+            with open(temp_path, "wb") as f:
+                f.write(content)
+            array, _ = load_and_standardize_image(temp_path, modality)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not read '{image.filename}' as a raster image: {e}")
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    else:
+        decoded = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not decode '{image.filename}'.")
+        array = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+
+    height, width = array.shape[:2]
+    scale = PREVIEW_MAX_SIDE / max(height, width)
+    if scale < 1:
+        array = cv2.resize(array, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
+    ok, png = cv2.imencode(".png", cv2.cvtColor(array, cv2.COLOR_RGB2BGR))
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not encode the preview.")
+    return Response(content=png.tobytes(), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/report", summary="Rebuild the PDF of a finished run with the full current conversation")
+def rebuild_report(
+    session_id: str = Form(..., description="The run (its evidence image and trace) the report is built on"),
+    chat_history: Optional[str] = Form(None, description="Stringified JSON of the whole conversation so far"),
+    map_link: Optional[str] = Form(None, description="Link to the analysed view on a map (live-map captures), shown in scan reports"),
+):
+    """Every /analyze call writes its own PDF, but a chat has many runs and later plain questions carry
+    only the raw image as evidence. This lets the UI pick which run's evidence the report shows while
+    still printing the complete conversation."""
+    if not _SESSION_ID.match(session_id or ""):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid session id.")
+    folder = os.path.join("reports", session_id)
+    data_path = os.path.join(folder, "data.json")
+    if not os.path.exists(data_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such analysis run.")
+    with open(data_path) as f:
+        record = json.load(f)
+
+    history = record.get("chat_history", [])
+    if chat_history:
+        try:
+            parsed = json.loads(chat_history)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chat_history is not valid JSON.")
+        if isinstance(parsed, list):
+            history = parsed
+
+    trace = json.loads(json.dumps(record["agent_execution_trace"]))
+    trace.setdefault("telemetry", {})["report_note"] = (
+        f"Built on demand: the conversation shown is current; the evidence image and this trace belong to run {session_id}."
+    )
+    evidence_path = os.path.join(folder, "evidence.png")
+    image_source = None
+    if os.path.exists(evidence_path):
+        with open(evidence_path, "rb") as f:
+            image_source = io.BytesIO(f.read())
+
+    try:
+        pdf = generate_pdf_report(
+            query=record["query"], answer=record["answer"], agent_execution_trace=trace,
+            image_source=image_source, chat_history=history,
+            scan=record.get("scan"), map_link=map_link if (map_link or "").startswith(("https://", "http://")) else None,
+        )
+        pdf.seek(0)
+        with open(os.path.join(folder, "report_chat.pdf"), "wb") as f:
+            f.write(pdf.read())
+    except Exception as e:
+        print(f"[{session_id}] PDF rebuild failed: {e}")
+        return {"report_download_url": None, "report_error": f"PDF generation failed: {type(e).__name__}"}
+    return {"report_download_url": f"/reports/{session_id}/report_chat.pdf", "report_error": None}

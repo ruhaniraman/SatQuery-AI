@@ -1,4 +1,5 @@
 """Pure helpers for the tile yes/no scan (numpy/scipy only, no model)."""
+import os
 from typing import List, Sequence, Tuple
 
 import numpy as np
@@ -11,6 +12,10 @@ DEFAULT_CONTEXT = 0.25
 
 # Probability of "yes" (vs "no") at or above which a tile counts as positive. A guess to tune.
 DEFAULT_YES_THRESHOLD = 0.5
+# The single-image scan boxes only CONFIDENT tiles. At 0.5 the mining adapter said yes to 10 of 16 tiles
+# of a mixed mine/town scene (P 0.59-0.97), 4-connected them into one group and boxed the whole image.
+# UNVALIDATED (one real scene); env GRID_YES_THRESHOLD overrides. Scan comparison keeps 0.5.
+SCAN_YES_THRESHOLD = float(os.environ.get("GRID_YES_THRESHOLD", 0.8))
 
 
 def tile_windows(width: int, height: int, rows: int, cols: int,

@@ -1,47 +1,122 @@
 /* Dashboard-only styles, scoped by class so the landing and About pages are unaffected. */
 
-/* Thin scrollbars that fit the dark glass panels */
+/* ---- Theme ----------------------------------------------------------------------------------
+   Components are written with dark-theme utilities (bg-black/40, text-slate-100, border-white/10 ...).
+   Tailwind compiles those to var(--color-*), so the light theme only re-maps the palette variables
+   inside .sq-root[data-theme='light']: "black" glass becomes white glass, "white" hairlines become navy
+   tints, slate text turns dark and the blue accents darken. A new component gets both themes for free as
+   long as it sticks to these utilities. The few things that are not utilities (backdrop, Leaflet) use the
+   --sq-* variables below. */
+.sq-root {
+  --sq-overlay: linear-gradient(to bottom, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.4) 45%, rgba(0, 0, 0, 0.75) 100%);
+  --sq-map-bg: #070b14;
+  --sq-ctl-bg: rgba(0, 0, 0, 0.62);
+  --sq-ctl-bg-hover: rgba(30, 41, 59, 0.85);
+  --sq-ctl-fg: #e2e8f0;
+  --sq-ctl-border: rgba(255, 255, 255, 0.15);
+  --sq-ctl-divider: rgba(255, 255, 255, 0.12);
+  --sq-attr-bg: rgba(0, 0, 0, 0.55);
+  --sq-attr-fg: #94a3b8;
+  --sq-attr-link: #93c5fd;
+  --sq-scroll: rgba(148, 163, 184, 0.35);
+  --sq-scroll-hover: rgba(148, 163, 184, 0.5);
+}
+.sq-root[data-theme='dark'] { color-scheme: dark; }
+
+.sq-root[data-theme='light'] {
+  color-scheme: light;
+  --sq-overlay: linear-gradient(to bottom, rgba(248, 250, 252, 0.9) 0%, rgba(241, 245, 249, 0.78) 45%, rgba(248, 250, 252, 0.92) 100%);
+  --sq-map-bg: #e2e8f0;
+  --sq-ctl-bg: rgba(255, 255, 255, 0.86);
+  --sq-ctl-bg-hover: rgba(226, 232, 240, 0.95);
+  --sq-ctl-fg: #0f172a;
+  --sq-ctl-border: rgba(15, 23, 42, 0.18);
+  --sq-ctl-divider: rgba(15, 23, 42, 0.12);
+  --sq-attr-bg: rgba(255, 255, 255, 0.75);
+  --sq-attr-fg: #475569;
+  --sq-attr-link: #1d4ed8;
+  --sq-scroll: rgba(71, 85, 105, 0.4);
+  --sq-scroll-hover: rgba(71, 85, 105, 0.6);
+
+  /* surfaces and hairlines */
+  --color-black: #ffffff;
+  --color-white: #0f172a;
+  /* text */
+  --color-slate-50: #0f172a;
+  --color-slate-100: #0f172a;
+  --color-slate-200: #1e293b;
+  --color-slate-300: #334155;
+  --color-slate-400: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-600: #64748b;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-950: #ffffff;          /* text on the solid blue primary buttons */
+  /* accents */
+  --color-blue-50: #0f172a;
+  --color-blue-100: #1e3a8a;
+  --color-blue-200: #1e40af;
+  --color-blue-300: #1d4ed8;
+  --color-blue-400: #2563eb;
+  --color-blue-700: #60a5fa;
+  --color-blue-950: #bfdbfe;
+  --color-amber-100: #78350f;
+  --color-amber-300: #b45309;
+  --color-amber-700: #f59e0b;
+  --color-amber-950: #fde68a;
+  --color-emerald-300: #047857;
+  --color-rose-300: #be123c;
+  --color-red-200: #991b1b;
+  --color-red-800: #ef4444;
+  --color-red-950: #fecaca;
+}
+/* text-white sits on saturated buttons (amber/emerald/rose), where it must stay white */
+.sq-root[data-theme='light'] .text-white { color: #ffffff; }
+
+.sq-root .sq-overlay { background: var(--sq-overlay); }
+
+/* Thin scrollbars that fit the glass panels */
 .sq-scroll {
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  scrollbar-color: var(--sq-scroll) transparent;
 }
 .sq-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-.sq-scroll::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 999px; }
-.sq-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.5); }
+.sq-scroll::-webkit-scrollbar-thumb { background: var(--sq-scroll); border-radius: 999px; }
+.sq-scroll::-webkit-scrollbar-thumb:hover { background: var(--sq-scroll-hover); }
 
 /* Leaflet, re-skinned to match the dashboard */
 .sq-map .leaflet-container {
-  background: #070b14;
+  background: var(--sq-map-bg);
   font-family: inherit;
   outline: none;
 }
 .sq-map .leaflet-bar {
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--sq-ctl-border);
   box-shadow: none;
   border-radius: 10px;
   overflow: hidden;
 }
 .sq-map .leaflet-bar a,
 .sq-map .leaflet-bar a:hover {
-  background-color: rgba(0, 0, 0, 0.62);
-  color: #e2e8f0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background-color: var(--sq-ctl-bg);
+  color: var(--sq-ctl-fg);
+  border-bottom: 1px solid var(--sq-ctl-divider);
   backdrop-filter: blur(8px);
 }
-.sq-map .leaflet-bar a:hover { background-color: rgba(30, 41, 59, 0.85); }
+.sq-map .leaflet-bar a:hover { background-color: var(--sq-ctl-bg-hover); }
 .sq-map .leaflet-bar a:last-child { border-bottom: none; }
 .sq-map .leaflet-control-attribution {
-  background: rgba(0, 0, 0, 0.55);
-  color: #94a3b8;
+  background: var(--sq-attr-bg);
+  color: var(--sq-attr-fg);
   font-size: 10px;
   border-top-left-radius: 8px;
   backdrop-filter: blur(6px);
 }
-.sq-map .leaflet-control-attribution a { color: #93c5fd; }
+.sq-map .leaflet-control-attribution a { color: var(--sq-attr-link); }
 .sq-map .leaflet-control-scale-line {
-  background: rgba(0, 0, 0, 0.55);
-  border-color: #cbd5e1;
-  color: #e2e8f0;
+  background: var(--sq-attr-bg);
+  border-color: var(--sq-attr-fg);
+  color: var(--sq-ctl-fg);
   font-size: 10px;
   text-shadow: none;
 }

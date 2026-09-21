@@ -38,8 +38,8 @@ export function formatErrorDetail(detail) {
 
 // Never throws: a proxy/gateway error page or an empty body is not JSON, and must not turn into an
 // unhandled promise rejection instead of the error banner.
-export async function readErrorMessage(response) {
-  const fallback = `Analysis failed (HTTP ${response.status}).`;
+export async function readErrorMessage(response, what = 'Analysis') {
+  const fallback = `${what} failed (HTTP ${response.status}).`;
   try {
     const text = await response.text();
     try {
@@ -106,6 +106,58 @@ export async function requestAnalysis({ query, adapter, images, history, fetchIm
   }
   if (!response.ok) throw new Error(await readErrorMessage(response));
   return response.json();
+}
+
+// Browsers cannot draw TIFF/GeoTIFF, so the backend renders one to a PNG using the same loader the
+// analysis uses (percentile stretch, SAR despeckle). Resolves to the PNG as a Blob.
+export async function requestPreview({ file, modality = 'optical', fetchImpl = fetch, baseUrl = BACKEND_URL }) {
+  const form = new FormData();
+  form.append('image', file);
+  form.append('modality', modality);
+  let response;
+  try {
+    response = await fetchImpl(`${baseUrl}/preview`, { method: 'POST', body: form });
+  } catch {
+    throw new Error(`Cannot reach the server at ${baseUrl} to render a preview.`);
+  }
+  if (!response.ok) throw new Error(await readErrorMessage(response, 'Preview'));
+  return response.blob();
+}
+
+// Rebuild the PDF of one finished run with the whole conversation so far. Resolves to
+// { report_download_url, report_error }.
+export async function requestReport({ sessionId, history = [], mapLink = null, fetchImpl = fetch, baseUrl = BACKEND_URL }) {
+  const form = new FormData();
+  form.append('session_id', sessionId);
+  form.append('chat_history', JSON.stringify(history));
+  if (mapLink) form.append('map_link', mapLink);
+  let response;
+  try {
+    response = await fetchImpl(`${baseUrl}/report`, { method: 'POST', body: form });
+  } catch {
+    throw new Error(`Cannot reach the server at ${baseUrl} to build the report.`);
+  }
+  if (!response.ok) throw new Error(await readErrorMessage(response, 'Report'));
+  return response.json();
+}
+
+// What the header shows. Never throws: an unreachable backend is a state, not an error.
+//   ready | loading (up, model still loading) | model-error | offline
+export async function checkHealth({ fetchImpl = fetch, baseUrl = BACKEND_URL, timeoutMs = 4000 } = {}) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetchImpl(`${baseUrl}/health`, controller ? { signal: controller.signal } : undefined);
+    if (!response.ok) return { state: 'offline', message: `The backend answered HTTP ${response.status}.` };
+    const body = await response.json();
+    if (body.model_loaded) return { state: 'ready', message: 'Backend and model are ready.' };
+    if (body.model_error) return { state: 'model-error', message: `The model failed to load: ${body.model_error}` };
+    return { state: 'loading', message: 'The model is still loading.' };
+  } catch {
+    return { state: 'offline', message: `Cannot reach the backend at ${baseUrl}.` };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export const evidenceUrl = (result, baseUrl = BACKEND_URL) =>

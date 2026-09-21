@@ -1,10 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ImageIcon, Loader2 } from 'lucide-react';
 
 // Shared building blocks. They encode the dashboard's look (dark glass, blue accent, small
 // uppercase labels) once, so every panel stays consistent.
 
 export const cx = (...parts) => parts.filter(Boolean).join(' ');
+
+// When a run finishes its result card is usually below the inputs, out of sight. Scroll it to the top of
+// the panel once per new run (not on every render, so the user can scroll away).
+export function useScrollToNew(key) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (key) ref.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }, [key]);
+  return ref;
+}
 
 export function Card({ className = '', children, ...rest }) {
   return (
@@ -26,14 +36,16 @@ export function Label({ icon: Icon, children, right, className = '' }) {
   );
 }
 
+// Hover colours apply to ENABLED buttons only (enabled:hover:). A disabled or busy button (for example
+// "Analysing") used to inherit the panel's dark background on hover and turn black; now it never changes.
 const BUTTON_VARIANTS = {
-  primary: 'bg-blue-600/90 hover:bg-blue-500 text-slate-950 border-white/20',
-  subtle: 'bg-white/5 hover:bg-white/10 text-slate-200 border-white/10',
-  ghost: 'bg-transparent hover:bg-white/5 text-slate-300 border-transparent',
+  primary: 'bg-blue-600/90 enabled:hover:bg-blue-500 text-slate-950 border-white/20',
+  subtle: 'bg-white/5 enabled:hover:bg-white/10 text-slate-200 border-white/10',
+  ghost: 'bg-transparent enabled:hover:bg-white/5 text-slate-300 border-transparent',
   // The scan colours from the original dashboard (amber / emerald / rose)
-  amber: 'bg-amber-600/80 hover:bg-amber-500 text-white border-white/10',
-  emerald: 'bg-emerald-600/80 hover:bg-emerald-500 text-white border-white/10',
-  rose: 'bg-rose-600/80 hover:bg-rose-500 text-white border-white/10',
+  amber: 'bg-amber-600/80 enabled:hover:bg-amber-500 text-white border-white/10',
+  emerald: 'bg-emerald-600/80 enabled:hover:bg-emerald-500 text-white border-white/10',
+  rose: 'bg-rose-600/80 enabled:hover:bg-rose-500 text-white border-white/10',
 };
 const BUTTON_SIZES = { sm: 'text-xs px-2.5 py-1.5', md: 'text-[13px] px-3.5 py-2' };
 
@@ -41,9 +53,11 @@ export function Button({ variant = 'primary', size = 'md', icon: Icon, loading =
   return (
     <button
       type="button"
+      aria-busy={loading || undefined}
       className={cx(
-        'inline-flex items-center justify-center gap-2 rounded-lg border font-semibold transition cursor-pointer',
-        'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-inherit',
+        'inline-flex items-center justify-center gap-2 rounded-lg border font-semibold transition',
+        // busy = working (readable, progress cursor); disabled = unavailable (dimmed)
+        loading ? 'cursor-progress opacity-80' : 'cursor-pointer disabled:cursor-not-allowed disabled:opacity-40',
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70',
         BUTTON_VARIANTS[variant], BUTTON_SIZES[size], className,
       )}
@@ -74,7 +88,7 @@ export function Segmented({ value, onChange, options, label, size = 'md', classN
               size === 'sm' ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-xs',
               'disabled:cursor-not-allowed disabled:opacity-40',
               'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70',
-              active ? 'bg-blue-600/90 text-slate-950' : 'text-slate-300 hover:bg-white/5',
+              active ? 'bg-blue-600/90 text-slate-950' : 'text-slate-300 enabled:hover:bg-white/5',
             )}
           >
             {opt.icon && <opt.icon size={13} />}

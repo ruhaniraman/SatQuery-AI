@@ -1,21 +1,33 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Cpu, PanelLeftClose } from 'lucide-react';
+import { PanelLeftClose } from 'lucide-react';
 import earthBg from './assets/earth.jpeg';
+import logo from './assets/logo.jpeg';
 import './dashboard/dashboard.css';
 import { FEATURES, featureById } from './dashboard/features';
 import { useWorkspace } from './dashboard/hooks/useWorkspace';
+import { useBackendStatus } from './dashboard/hooks/useBackendStatus';
 import NavRail from './dashboard/components/NavRail';
 import Viewer from './dashboard/components/Viewer';
+import ThemeToggle from './dashboard/components/ThemeToggle';
+import StatusPill from './dashboard/components/StatusPill';
+import { readTheme, saveTheme } from './dashboard/utils/theme';
 
 // Layout: header, then [feature nav] [active feature's panel] [viewer]. The viewer shows the live
-// satellite map by default and can be switched to the user's inputs and analysis evidence.
+// satellite map by default and can be switched to the open feature's images and analysis evidence.
 export default function Dashboard() {
   const ws = useWorkspace();
+  const health = useBackendStatus();
   const [featureId, setFeatureId] = useState('imagery');
   const [panelOpen, setPanelOpen] = useState(true);
+  const [theme, setTheme] = useState(readTheme);
   const feature = featureById(featureId);
   const Panel = feature.Panel;
+
+  const changeTheme = (next) => {
+    setTheme(next);
+    saveTheme(next);
+  };
 
   // Clicking the feature that is already open collapses its panel, giving the viewer the full width
   const selectFeature = (id) => {
@@ -32,24 +44,26 @@ export default function Dashboard() {
 
   return (
     <div
+      data-theme={theme}
       className="sq-root fixed inset-0 flex flex-col overflow-hidden font-sans text-slate-100"
       style={{ backgroundImage: `url(${earthBg})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
     >
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,0.80) 0%, rgba(0,0,0,0.40) 45%, rgba(0,0,0,0.75) 100%)' }}
-      />
+      <div className="sq-overlay pointer-events-none absolute inset-0" />
 
       <div className="relative z-10 flex h-full min-h-0 flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/10 bg-black/50 px-5 backdrop-blur-md">
-          <Link to="/" className="flex items-center gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded-lg" title="Back to home">
-            <span className="rounded-lg bg-blue-500/90 p-1.5 text-slate-950"><Cpu size={18} /></span>
-            <span className="text-lg font-bold leading-none tracking-wide">SatQuery-AI</span>
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/50 px-3 backdrop-blur-md">
+          {/* The logo sits in a column as wide as the nav rail (76px), so it is centred over the nav icons, and
+              the title starts where the side panel starts (rail + the 12px gap of the layout below). */}
+          <Link to="/" aria-label="SatQuery-AI home" className="flex items-center gap-3 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70" title="Back to home">
+            <span className="flex w-[76px] shrink-0 justify-center">
+              <img src={logo} alt="" className="h-10 w-10 rounded-xl bg-white object-contain p-0.5" />
+            </span>
+            <span className="text-2xl font-bold leading-none tracking-wide">SatQuery-AI</span>
           </Link>
-          <span className="flex items-center rounded-full border border-blue-700/40 bg-blue-950/40 px-3 py-1 text-xs text-blue-300">
-            <span className={`mr-2 h-2 w-2 rounded-full bg-blue-400 ${ws.isExecuting ? 'animate-pulse' : ''}`} />
-            {ws.isExecuting ? 'Analysing' : 'Agent ready'}
-          </span>
+          <div className="flex items-center gap-2.5 pr-2">
+            <StatusPill health={health} executing={ws.isExecuting} onRefresh={health.refresh} />
+            <ThemeToggle theme={theme} onChange={changeTheme} />
+          </div>
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 lg:flex-row">
@@ -60,10 +74,9 @@ export default function Dashboard() {
               aria-label={feature.title}
               className="flex max-h-[46vh] w-full shrink-0 flex-col overflow-hidden rounded-xl border border-white/10 bg-black/50 backdrop-blur-md lg:max-h-none lg:w-[400px] xl:w-[430px]"
             >
-              <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/10 px-5 py-4">
+              <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-5 py-3.5">
                 <div className="min-w-0">
                   <h2 className="text-base font-semibold leading-tight text-slate-50">{feature.title}</h2>
-                  <p className="mt-0.5 text-xs leading-snug text-slate-400">{feature.summary}</p>
                 </div>
                 <button
                   type="button"
@@ -82,7 +95,7 @@ export default function Dashboard() {
           )}
 
           <main className="flex min-h-0 min-w-0 flex-1">
-            <Viewer ws={ws} onAddImagery={() => goTo('imagery')} onOpenFeature={goTo} />
+            <Viewer ws={ws} feature={feature} onOpenFeature={goTo} />
           </main>
         </div>
       </div>

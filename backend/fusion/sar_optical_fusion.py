@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 
 import numpy as np
@@ -6,21 +7,35 @@ import cv2
 from agent_manager.prompts import REPLY_WORD_LIMIT
 
 # What the composite really is; reported verbatim in the audit trace.
-FUSION_METHOD = "HSV value-channel replacement (hue/saturation from optical, brightness from SAR)"
+FUSION_METHOD = ("HSV blend (hue/saturation and fine detail from optical; brightness lightened/darkened "
+                 "by smoothed SAR backscatter)")
+
+# How far smoothed SAR may move the optical brightness (0 = optical only, 1 = full SAR swing of +-127).
+# An UNVALIDATED guess: replacing brightness outright (the earlier method) turned coarse, speckled SAR
+# into black/white blotches over an urban optical scene.
+DEFAULT_SAR_WEIGHT = 0.7
+
+
+def sar_weight() -> float:
+    try:
+        return min(1.0, max(0.0, float(os.environ.get("SAR_FUSION_WEIGHT", DEFAULT_SAR_WEIGHT))))
+    except ValueError:
+        return DEFAULT_SAR_WEIGHT
 
 
 def create_fusion_composite(optical_array: np.ndarray, sar_array: np.ndarray,
                             sar_valid: Optional[np.ndarray] = None) -> np.ndarray:
-    """Fuse by HSV value-channel replacement.
+    """Fuse by an HSV brightness blend.
 
-    Hue and saturation are kept from the optical image; the brightness (V) channel is replaced by
-    the SAR backscatter. This is NOT true IHS/Brovey fusion, and it does not guarantee any
-    particular colour for a given surface: colour is whatever the optical image had, so it only
-    says something about the surface where the optical image did.
+    Hue, saturation and the optical brightness are kept. The SAR backscatter is percentile-stretched,
+    smoothed (edge-preserving, so speckle and its upscaling blocks do not become noise) and then only
+    LIGHTENS or DARKENS the optical brightness around the SAR's own median, by at most `sar_weight()`
+    of the full range. So optical detail (roads, buildings) survives and SAR shows as a tint. This is
+    NOT true IHS/Brovey fusion, and it does not guarantee any colour for a given surface.
 
     sar_valid: optional (H, W) bool, False where the SAR raster has no data (e.g. outside its
     footprint after alignment). Those pixels are left out of the SAR normalisation and keep the
-    optical image's own brightness instead of being painted black.
+    optical image's own brightness instead of being painted dark.
     """
     # 1. Resize SAR (and its validity mask) to match Optical exactly
     target_shape = (optical_array.shape[1], optical_array.shape[0])
@@ -38,6 +53,12 @@ def create_fusion_composite(optical_array: np.ndarray, sar_array: np.ndarray,
     p2, p98 = np.percentile(sar_channel[valid], (2, 98))
     sar_normalized = np.clip((sar_channel.astype(np.float32) - p2) / (p98 - p2 + 1e-5) * 255.0, 0, 255).astype(np.uint8)
 
+    # Smooth: Gaussian scaled to the image, then an edge-preserving bilateral filter
+    side = max(sar_normalized.shape)
+    sigma = max(1.0, side / 200.0)
+    sar_smooth = cv2.GaussianBlur(sar_normalized, (0, 0), sigma)
+    sar_smooth = cv2.bilateralFilter(sar_smooth, 9, 40, max(3.0, side / 100.0))
+
     # 3. Convert Optical RGB to HSV
     if optical_array.dtype != np.uint8:
         peak = float(np.max(optical_array))
@@ -45,8 +66,11 @@ def create_fusion_composite(optical_array: np.ndarray, sar_array: np.ndarray,
 
     hsv_image = cv2.cvtColor(optical_array, cv2.COLOR_RGB2HSV)
 
-    # 4. Replace the 'V' (Value/Brightness) channel with the Normalized SAR where SAR has data
-    hsv_image[:, :, 2] = np.where(valid, sar_normalized, hsv_image[:, :, 2])
+    # 4. Shift the optical 'V' by the SAR's deviation from its median (valid pixels only); gaps unchanged
+    centre = float(np.median(sar_smooth[valid]))
+    shift = sar_weight() * (sar_smooth.astype(np.float32) - centre)
+    v = hsv_image[:, :, 2].astype(np.float32) + np.where(valid, shift, 0.0)
+    hsv_image[:, :, 2] = np.clip(v, 0, 255).astype(np.uint8)
 
     # 5. Convert back to RGB for the VLM to interpret naturally
     return cv2.cvtColor(hsv_image, cv2.COLOR_HSV2RGB)
@@ -57,10 +81,11 @@ def fusion_system_prompt() -> str:
     promise specific colours for specific surfaces (the fusion maths cannot guarantee any)."""
     return (
         "You are a satellite-imagery analyst. This image fuses two sensors: the colour (hue and "
-        "saturation) comes from an optical image, the brightness from radar (SAR) backscatter, not "
-        "sunlight. Very dark areas usually mean low backscatter (calm water, smooth surfaces); very "
-        "bright areas usually mean strong backscatter (buildings, rough ground). These are hints: say "
-        "so when a feature is ambiguous. It is not a photograph.\n"
+        "saturation) and the fine detail come from an optical image; radar (SAR) backscatter only "
+        "lightens or darkens it. Areas darkened beyond what the optical scene explains may be low "
+        "backscatter (calm water, smooth surfaces); areas lightened may be strong backscatter "
+        "(buildings, rough ground). These are hints: say so when a feature is ambiguous. It is not a "
+        "photograph.\n"
         f"Reply in two short parts, under {REPLY_WORD_LIMIT} words in total.\n"
         "OBSERVATIONS: the visible features relevant to the question; only those present.\n"
         "ASSESSMENT: the answer, based only on those observations. If the image cannot answer it, say "

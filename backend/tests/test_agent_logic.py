@@ -12,7 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agent_manager.grid_scan import merge_positive_tiles, tile_windows, yes_probability  # noqa: E402
+from agent_manager.grid_scan import SCAN_YES_THRESHOLD, merge_positive_tiles, tile_windows, yes_probability  # noqa: E402
 from agent_manager.prompts import (  # noqa: E402
     DEFAULT_MAX_NEW_TOKENS,
     build_general_messages,
@@ -322,3 +322,13 @@ def test_scan_scores_rejects_unknown_adapters_and_shares_the_scan_questions(cont
         eng.scan_scores(np.zeros((8, 8, 3), np.uint8), "general")
     assert set(controller.ADAPTER_QUESTIONS) == {"mining", "deforestation", "agriculture"}
     assert all("'yes' or 'no'" in q for q in controller.ADAPTER_QUESTIONS.values())
+
+
+def test_scan_threshold_keeps_a_mixed_scene_from_being_boxed_whole():
+    # Real mining-adapter P(yes) grid for a scene of two pits inside a town: at 0.5 ten tiles are
+    # positive, 4-connected into ONE group whose bounding box is the whole image.
+    p = np.array([[0.84, 0.41, 0.15, 0.12], [0.91, 0.25, 0.88, 0.27],
+                  [0.91, 0.59, 0.97, 0.35], [0.82, 0.62, 0.88, 0.85]])
+    assert merge_positive_tiles(p >= 0.5) == [[0.0, 0.0, 1.0, 1.0]]
+    boxes = merge_positive_tiles(p >= SCAN_YES_THRESHOLD)
+    assert boxes == [[0.0, 0.0, 1.0, 0.25], [0.25, 0.5, 1.0, 1.0]]

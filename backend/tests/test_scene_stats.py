@@ -74,7 +74,7 @@ def test_scans_do_not_compute_scene_facts(client):
 
     resp = one_image(client, query="scan", adapter="mining")
     assert "measured_scene_facts" not in trace_of(resp)["telemetry"]
-    assert client.agent.calls[-1]["scene_facts"] == ""
+    assert client.agent.calls[-1] == {"scan": "mining", "prompt": "scan"}   # a scan never goes through query(), so no scene facts
 
 
 from test_endpoint_wiring import client  # noqa: E402,F401

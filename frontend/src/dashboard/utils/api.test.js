@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   analysisMode, buildAnalyzeFormData, DEFAULT_QUERIES, evidenceUrl, formatBytes, formatErrorDetail,
   formatTelemetryValue, humanizeIdentifier, isTiffFile, readErrorMessage, reportFileName, reportUrl,
-  requestAnalysis,
+  requestAnalysis, checkHealth, requestPreview, requestReport,
 } from './api.js';
 import { formatLatLng, MAP_CONFIG } from './mapConfig.js';
 
@@ -163,4 +163,63 @@ test('map defaults use a keyless imagery source with attribution', () => {
   assert.match(MAP_CONFIG.imageryUrl, /\{z\}.*\{y\}.*\{x\}/);
   assert.ok(MAP_CONFIG.imageryAttribution.length > 0);
   assert.ok(MAP_CONFIG.minZoom < MAP_CONFIG.maxZoom);
+});
+
+// ------------------------------------------------------------------ preview / report / health
+
+test('requestPreview posts the file and modality and resolves to the PNG blob', async () => {
+  let seen;
+  const png = new Blob(['x'], { type: 'image/png' });
+  const fetchImpl = async (url, init) => { seen = { url, init }; return { ok: true, status: 200, blob: async () => png }; };
+  const out = await requestPreview({ file: file('scene.tif'), modality: 'sar', fetchImpl, baseUrl: 'http://api' });
+  assert.equal(out, png);
+  assert.equal(seen.url, 'http://api/preview');
+  assert.equal(seen.init.method, 'POST');
+  assert.equal(seen.init.body.get('modality'), 'sar');
+  assert.equal(seen.init.body.get('image').name, 'scene.tif');
+});
+
+test('requestPreview gives readable errors', async () => {
+  const down = () => Promise.reject(new TypeError('Failed to fetch'));
+  await assert.rejects(requestPreview({ file: file('a.tif'), fetchImpl: down, baseUrl: 'http://api' }), /Cannot reach the server at http:\/\/api to render a preview/);
+  const bad = async () => response(400, JSON.stringify({ detail: "Could not read 'a.tif' as a raster image: boom" }));
+  await assert.rejects(requestPreview({ file: file('a.tif'), fetchImpl: bad }), /Could not read 'a.tif'/);
+  const proxy = async () => response(502, '<html>Bad Gateway</html>');
+  await assert.rejects(requestPreview({ file: file('a.tif'), fetchImpl: proxy }), /Preview failed \(HTTP 502\)/);
+});
+
+test('requestReport sends the session and the whole conversation', async () => {
+  let seen;
+  const fetchImpl = async (url, init) => { seen = { url, init }; return { ok: true, status: 200, json: async () => ({ report_download_url: '/reports/x/report_chat.pdf', report_error: null }) }; };
+  const history = [{ role: 'user', content: 'hi' }, { role: 'ai', content: 'hello' }];
+  const out = await requestReport({ sessionId: 'abc', history, fetchImpl, baseUrl: 'http://api' });
+  assert.equal(out.report_download_url, '/reports/x/report_chat.pdf');
+  assert.equal(seen.url, 'http://api/report');
+  assert.equal(seen.init.body.get('session_id'), 'abc');
+  assert.deepEqual(JSON.parse(seen.init.body.get('chat_history')), history);
+});
+
+test('requestReport gives readable errors', async () => {
+  await assert.rejects(requestReport({ sessionId: 'x', fetchImpl: async () => response(404, JSON.stringify({ detail: 'No such analysis run.' })) }), /No such analysis run/);
+  await assert.rejects(requestReport({ sessionId: 'x', fetchImpl: () => Promise.reject(new Error('down')), baseUrl: 'http://api' }), /Cannot reach the server at http:\/\/api to build the report/);
+});
+
+test('checkHealth maps every backend state, and never throws', async () => {
+  const health = (body, status = 200) => async () => ({ ok: status < 300, status, json: async () => body });
+  assert.equal((await checkHealth({ fetchImpl: health({ status: 'ok', model_loaded: true, model_error: null }) })).state, 'ready');
+  assert.equal((await checkHealth({ fetchImpl: health({ status: 'ok', model_loaded: false, model_error: null }) })).state, 'loading');
+  const failed = await checkHealth({ fetchImpl: health({ status: 'ok', model_loaded: false, model_error: 'RuntimeError: no weights' }) });
+  assert.equal(failed.state, 'model-error');
+  assert.match(failed.message, /no weights/);
+  assert.equal((await checkHealth({ fetchImpl: health({}, 500) })).state, 'offline');
+  assert.equal((await checkHealth({ fetchImpl: () => Promise.reject(new TypeError('Failed to fetch')) })).state, 'offline');
+  assert.equal((await checkHealth({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw new Error('not json'); } }) })).state, 'offline');
+});
+
+test('checkHealth gives up on a hung backend instead of waiting forever', async () => {
+  const hung = (_url, init) => new Promise((_res, rej) => init.signal.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError'))));
+  const started = Date.now();
+  const out = await checkHealth({ fetchImpl: hung, timeoutMs: 30 });
+  assert.equal(out.state, 'offline');
+  assert.ok(Date.now() - started < 1000);
 });

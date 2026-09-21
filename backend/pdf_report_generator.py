@@ -75,6 +75,8 @@ def generate_pdf_report(
     image_source: Optional[Any] = None,
     output_path: Optional[str] = None,
     chat_history: Optional[list] = None, # <-- Added chat_history parameter
+    scan: Optional[Dict[str, Any]] = None,   # a feature scan's summary (headline, findings), shown first
+    map_link: Optional[str] = None,          # where the analysed view is on a map, when it came from the live map
 ) -> io.BytesIO:
     buffer = io.BytesIO()
     target = output_path if output_path else buffer
@@ -119,8 +121,35 @@ def generate_pdf_report(
     story.append(header_table)
     story.append(HRFlowable(width="100%", thickness=1, color=accent_color, spaceBefore=4, spaceAfter=8))
 
+    # --- RESULT AT A GLANCE (feature scans): the answer first, in plain words ---
+    if scan:
+        colour = {"high": "#B91C1C", "likely": "#B45309", "possible": "#64748B", "none": "#15803D"}.get(scan.get("level"), "#0F172A")
+        rows = [[Paragraph("RESULT AT A GLANCE", styles["LabelText"])],
+                [Paragraph(f"<font color='{colour}'><b>{_safe(scan.get('headline', ''))}</b></font>", styles["BodyDark"])]]
+        if scan.get("note"):
+            rows.append([Paragraph(f"<b>Note:</b> {_safe(scan['note'])}", styles["BodyDark"])])
+        for f in scan.get("findings", []):
+            rows.append([Paragraph(
+                f"<b>{f['id']}.</b> {_safe(f['label'])} &ndash; {_safe(f['where'])}, about {f['coverage_pct']}% of the view "
+                f"(average score {f['confidence']}%, best tile {f['peak']}%)", styles["BodyDark"])])
+        rows.append([Paragraph(
+            "How to read the image: the tint gets stronger where the scan is more sure; numbered outlines mark confident areas "
+            "(a tile scoring at least " + f"{round(100 * scan.get('threshold', 0))}%" + "). This is an automated screening, not a survey: "
+            "check the highlighted areas by eye.", styles["LabelText"])])
+        if map_link:
+            safe_link = _safe(map_link)
+            rows.append([Paragraph(f"View on a map: <a href='{safe_link}' color='#2563EB'>{safe_link}</a>", styles["BodyDark"])])
+        glance = Table(rows, colWidths=[7.5 * inch])
+        glance.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), card_bg), ("BOX", (0, 0), (-1, -1), 0.75, accent_color),
+            ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(glance)
+        story.append(Spacer(1, 8))
+
     # --- FULL CHAT CONVERSATION BLOCK ---
-    story.append(Paragraph("AUDIT CONVERSATION HISTORY", styles["SectionHeading"]))
+    story.append(Paragraph("CONVERSATION", styles["SectionHeading"]))
     
     summary_data = []
     if chat_history and len(chat_history) > 0:
@@ -158,7 +187,7 @@ def generate_pdf_report(
     story.append(Spacer(1, 8))
 
     # --- Two-Column Layout: Visual Evidence & Execution Trace ---
-    story.append(Paragraph("INSPECTION EVIDENCE & EXECUTION TELEMETRY", styles["SectionHeading"]))
+    story.append(Paragraph("EVIDENCE AND RUN DETAILS", styles["SectionHeading"]))
 
     left_elements = []
     if image_source:
@@ -234,7 +263,7 @@ def generate_pdf_report(
 
     # Full trace, never truncated: audit data must not be silently cut. Preformatted text flows
     # across pages, so a long trace just makes the report longer.
-    story.append(Paragraph("FULL EXECUTION TRACE", styles["SectionHeading"]))
+    story.append(Paragraph("TECHNICAL DETAILS (FULL TRACE)", styles["SectionHeading"]))
     trace_lines = []
     for line in json.dumps(trace_for_dump, indent=2, ensure_ascii=False).split("\n"):
         indent = len(line) - len(line.lstrip(" "))

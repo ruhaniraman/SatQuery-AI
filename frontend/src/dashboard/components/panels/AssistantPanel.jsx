@@ -29,16 +29,19 @@ function Message({ msg }) {
 }
 
 export default function AssistantPanel({ ws, goTo }) {
-  const { chat, isExecuting, error, dismissError, sendMessage, images } = ws;
+  const { chat, isExecuting, errorFor, dismissError, sendMessage, slots } = ws;
+  const error = errorFor('assistant');
   const [text, setText] = useState('');
   const endRef = useRef(null);
-  const hasImage = images.length > 0;
+  const hasImage = Boolean(slots.a.file);
+  // Results of two-image runs are in the same conversation (and the PDF) but have their own panels
+  const visible = chat.filter((entry) => entry.scope !== 'pair');
   const canSend = hasImage && !isExecuting && text.trim().length > 0;
 
   // Keep the newest message (or the spinner/error) in view
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'end' });
-  }, [chat.length, isExecuting, error]);
+  }, [visible.length, isExecuting, error]);
 
   const submit = (e) => {
     e?.preventDefault();
@@ -51,12 +54,10 @@ export default function AssistantPanel({ ws, goTo }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto pr-1 sq-scroll" aria-live="polite">
-        {chat.length === 0 && !isExecuting && (
+        {visible.length === 0 && !isExecuting && (
           hasImage ? (
             <div className="space-y-3 pt-2">
-              <EmptyState icon={Bot} title="Ask about your imagery">
-                Answers are based only on what is visible in the image.
-              </EmptyState>
+              <EmptyState icon={Bot} title="Ask about your imagery" />
               <div className="flex flex-wrap justify-center gap-2">
                 {SUGGESTIONS.map((s) => (
                   <button key={s} type="button" onClick={() => setText(s)} className="cursor-pointer rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:border-blue-500/50 hover:text-blue-200">
@@ -70,13 +71,11 @@ export default function AssistantPanel({ ws, goTo }) {
               icon={ImageIcon}
               title="Add an image to start"
               action={<Button variant="subtle" size="sm" className="mt-2" onClick={() => goTo('imagery')}>Open Imagery</Button>}
-            >
-              The assistant answers questions about the images you upload.
-            </EmptyState>
+            />
           )
         )}
 
-        {chat.map((msg, i) => <Message key={i} msg={msg} />)}
+        {visible.map((msg, i) => <Message key={i} msg={msg} />)}
 
         {isExecuting && (
           <div className="flex items-center gap-2 px-1 text-xs text-blue-300">
@@ -99,12 +98,12 @@ export default function AssistantPanel({ ws, goTo }) {
             rows={2}
             disabled={isExecuting}
             aria-label="Your question"
+            title="Enter to send, Shift+Enter for a new line"
             placeholder={hasImage ? 'Ask about the imagery…' : 'Add an image to ask questions'}
             className="max-h-32 min-h-[2.75rem] flex-1 resize-none bg-transparent px-2 py-1 text-[13px] text-slate-100 placeholder:text-slate-500 focus:outline-none disabled:opacity-50"
           />
           <Button type="submit" size="sm" icon={SendHorizontal} disabled={!canSend} aria-label="Send" className="h-9 w-9 !p-0" />
         </div>
-        <p className="mt-1.5 px-1 text-[11px] text-slate-500">Enter to send &middot; Shift+Enter for a new line</p>
       </form>
     </div>
   );

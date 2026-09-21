@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
+from agent_manager.grid_scan import SCAN_YES_THRESHOLD  # noqa: E402
 from agent_manager.schemas import ExecutionTrace, TaskType  # noqa: E402
 from test_endpoint_wiring import client, png_bytes, post, speckled, tif_bytes  # noqa: E402,F401
 
@@ -58,7 +59,7 @@ def test_grid_scan_trace_names_the_adapter_and_its_scoring(client):
     assert "LoRA adapter 'mining'" in tel["model_used"] and tel["active_adapter"] == "mining"
     assert tel["adapter_details"]["lora_rank"] == 16
     assert tel["adapter_training_data"] == "not recorded in the adapter files"
-    assert tel["grid_yes_threshold"] == 0.5 and "logit" in tel["inference"]
+    assert tel["grid_yes_threshold"] == SCAN_YES_THRESHOLD and "logit" in tel["inference"]
 
 
 def test_chat_turns_given_to_model_is_recorded(client):

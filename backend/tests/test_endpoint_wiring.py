@@ -30,6 +30,13 @@ class FakeAgent:
         self.calls.append(kw)
         return "A plain answer."
 
+    # P(yes) grid a feature scan gets back; a test can replace it
+    scan_grid = np.array([[0.9, 0.2, 0.1, 0.1], [0.9, 0.2, 0.1, 0.1], [0.3, 0.2, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1]])
+
+    def scan_scores(self, img_array, adapter, prompt=None):
+        self.calls.append({"scan": adapter, "prompt": prompt})
+        return self.scan_grid
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):

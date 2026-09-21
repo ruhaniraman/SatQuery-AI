@@ -1,6 +1,8 @@
 import React from 'react';
-import { CircleAlert, Eye, Pickaxe, ScanSearch, Sprout, Trees } from 'lucide-react';
-import { Button, Card, Label, Notice, cx } from '../ui';
+import { CircleAlert, Eye, Pickaxe, Sprout, Trees } from 'lucide-react';
+import { Button, Card, Label, Notice, cx, useScrollToNew } from '../ui';
+import ScanResult from '../ScanResult';
+import { mapLink } from '../../utils/scanResult';
 
 // Tailwind needs the class names written out in full, so each tone lists them explicitly.
 const TONES = {
@@ -16,7 +18,7 @@ export const SCANS = [
 ];
 
 function ScanCard({ scan, ws }) {
-  const { runScan, isExecuting, busy, images } = ws;
+  const { runScan, isExecuting, busy, slots } = ws;
   const Icon = scan.icon;
   const running = busy === `scan:${scan.id}`;
   return (
@@ -30,7 +32,7 @@ function ScanCard({ scan, ws }) {
       </div>
       <Button
         variant={scan.tone} size="sm" loading={running}
-        disabled={isExecuting || images.length === 0}
+        disabled={isExecuting || !slots.a.file}
         onClick={() => runScan(scan.id)}
         aria-label={`Run ${scan.title} scan`}
       >
@@ -41,17 +43,14 @@ function ScanCard({ scan, ws }) {
 }
 
 export default function ScansPanel({ ws, goTo }) {
-  const { latest, error, dismissError, images, setViewMode, setActiveLayer, result } = ws;
+  const { latest, errorFor, dismissError, slots, setViewMode, setActiveLayer, focusArea } = ws;
+  const error = errorFor('scans');
   const scan = latest.scan && SCANS.find((s) => s.id === latest.scan.adapter);
+  const resultRef = useScrollToNew(latest.scan?.id);
 
   return (
     <div className="space-y-3">
-      <Label icon={ScanSearch}>Feature scans</Label>
-      <p className="text-xs leading-relaxed text-slate-400">
-        Each scan examines Image A on a 4&times;4 grid and outlines the matching regions on the evidence layer.
-      </p>
-
-      {images.length === 0 && (
+      {!slots.a.file && (
         <Notice tone="info">
           Add an image first.{' '}
           <button type="button" className="cursor-pointer font-semibold underline" onClick={() => goTo('imagery')}>Open Imagery</button>
@@ -63,12 +62,14 @@ export default function ScansPanel({ ws, goTo }) {
       {error && <Notice tone="error" icon={CircleAlert} title="Scan failed" onDismiss={dismissError}>{error}</Notice>}
 
       {scan && (
-        <Card className="space-y-2 p-3.5">
-          <Label>{scan.title} scan &middot; latest result</Label>
-          <p className="text-[13px] leading-relaxed text-slate-100">{latest.scan.answer}</p>
-          {result?.visual_evidence_url && (
+        <Card ref={resultRef} className="scroll-mt-2 space-y-2 p-3.5">
+          <Label>{scan.title} &middot; latest result</Label>
+          {latest.scan.data.scan
+            ? <ScanResult scan={latest.scan.data.scan} link={mapLink(latest.scan.meta)} onShow={(finding) => focusArea(finding.box)} />
+            : <p className="text-[13px] leading-relaxed text-slate-100">{latest.scan.data.answer}</p>}
+          {latest.scan.data.visual_evidence_url && (
             <Button variant="subtle" size="sm" icon={Eye} onClick={() => { setViewMode('inputs'); setActiveLayer('evidence'); }}>
-              View evidence
+              View highlights
             </Button>
           )}
         </Card>

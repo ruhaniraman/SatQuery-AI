@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, BitsAndBytesConfig
 from peft import PeftModel
 from geospatial_preprocessing.geotiff_loader import load_and_standardize_image
-from agent_manager.grid_scan import DEFAULT_YES_THRESHOLD, merge_positive_tiles, tile_windows, yes_probability
+from agent_manager.grid_scan import SCAN_YES_THRESHOLD, merge_positive_tiles, tile_windows, yes_probability
 from agent_manager.prompts import (
     DEFAULT_MAX_NEW_TOKENS,
     DESCRIBE_MAX_NEW_TOKENS,
@@ -146,19 +146,22 @@ class SatQueryEngine:
         return probs.reshape(rows, cols)
 
     def _grid_classification(self, img, internal_prompt, grid_size=(4, 4),
-                             threshold=DEFAULT_YES_THRESHOLD, batch_size=4):
+                             threshold=SCAN_YES_THRESHOLD, batch_size=4):
         """The grid scan as merged region boxes: edge-adjacent positive cells become one region."""
         probs = self._grid_probs(img, internal_prompt, grid_size, batch_size)
         print("Grid P(yes):\n" + np.array2string(probs, precision=2))
         return merge_positive_tiles(probs >= threshold)
 
-    def scan_scores(self, img_array, adapter):
-        """P(yes) grid (4x4 ndarray) of one LoRA's question over a whole image, e.g. to compare two dates."""
+    def scan_scores(self, img_array, adapter, prompt=None):
+        """P(yes) grid (4x4 ndarray) of one LoRA's question over a whole image: the single-image scan (with the
+        user's `prompt` in front of the question, as the adapters were used) and the two-date comparison (no prompt)."""
         if adapter not in ADAPTER_QUESTIONS:
             raise ValueError(f"no scan question for adapter {adapter!r}")
+        question = ADAPTER_QUESTIONS[adapter]
+        internal_prompt = question.strip() if prompt is None else prompt + question
         with self.lock:
             self.model.set_adapter(adapter)
-            return self._grid_probs(Image.fromarray(img_array), ADAPTER_QUESTIONS[adapter].strip())
+            return self._grid_probs(Image.fromarray(img_array), internal_prompt)
 
     def _generate_texts(self, message_sets, images, max_new_tokens):
         """Batched free-text generation with the LoRA adapters disabled (base weights). One reply per

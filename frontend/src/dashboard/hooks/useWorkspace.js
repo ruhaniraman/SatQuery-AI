@@ -1,159 +1,266 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { analysisMode, DEFAULT_QUERIES, requestAnalysis } from '../utils/api';
+import {
+  BACKEND_URL, DEFAULT_QUERIES, isTiffFile, reportFileName, requestAnalysis, requestPreview, requestReport,
+} from '../utils/api';
+import { mapLink } from '../utils/scanResult';
+import {
+  addRun, dropRunsFor, emptySlot, isAnnotated, latestRun, makeRun, pickReportRun,
+} from '../utils/runs';
 
-const emptySlot = (modality = 'optical') => ({ file: null, preview: null, modality });
 const revoke = (url) => {
   if (url) URL.revokeObjectURL(url);   // each createObjectURL holds the file in memory until revoked
 };
 
-// Everything the panels share: the two image slots, the conversation, the latest result and the
-// viewer state. Panels stay presentational; this is the only place that talks to the API.
+const initialSlots = () => ({
+  a: emptySlot(),                 // the single image: Imagery, Assistant, Scans
+  before: emptySlot(),            // Change detection
+  after: emptySlot(),
+  optical: emptySlot('optical'),  // Optical-SAR fusion (sensor types are fixed by the slot)
+  sar: emptySlot('sar'),
+});
+const FIXED_MODALITY = { optical: 'optical', sar: 'sar' };
+
+const short = (text, n = 48) => (text.length > n ? `${text.slice(0, n - 1).trimEnd()}…` : text);
+const asImage = (slot) => ({ file: slot.file, modality: slot.modality });
+
+// Messages from two-image runs live in the same conversation (and the PDF), but must not be fed back to
+// the model as context for a question about the single image.
+const forSingleImageModel = (chat) => chat.filter((entry) => entry.scope !== 'pair');
+
+// Everything the panels share: the image slots, the conversation, the analysis runs and the viewer
+// state. Panels stay presentational; this is the only place that talks to the API.
 export function useWorkspace() {
-  const [a, setA] = useState(() => emptySlot());
-  const [b, setB] = useState(() => emptySlot());
+  const [slots, setSlots] = useState(initialSlots);
 
   // Viewer: the live map is the default; the inputs view shows the user's images and the evidence.
-  const [viewMode, setViewMode] = useState('map');          // 'map' | 'inputs'
-  const [activeLayer, setActiveLayer] = useState('imageA'); // 'imageA' | 'imageB' | 'evidence'
+  const [viewMode, setViewMode] = useState('map');           // 'map' | 'inputs'
+  const [activeLayer, setActiveLayer] = useState('a');       // a slot id | 'evidence' | 'swipe'
 
+  const [focus, setFocus] = useState(null);                  // { box, token }: a region of the evidence for the viewer to zoom to
   const [chat, setChat] = useState([]);
-  const [result, setResult] = useState(null);
-  // True when the current result came from a two-image run (so removing Image B invalidates it)
-  const [resultWasTwoImage, setResultWasTwoImage] = useState(false);
-  const [latest, setLatest] = useState({ scan: null, compare: null });
-  const [error, setError] = useState(null);
+  const [runs, setRuns] = useState([]);                      // newest first, see utils/runs.js
+  const [reportRunId, setReportRunId] = useState(null);      // null = automatic (newest annotated run)
+  const [error, setError] = useState(null);                  // { message, scope } | null
   const [isExecuting, setIsExecuting] = useState(false);
-  const [busy, setBusy] = useState(null);                   // which control started the run
+  const [busy, setBusy] = useState(null);                    // which control started the run
 
-  // Latest preview URLs, so replacing/removing an image (and unmounting) can free the old one
-  // without doing side effects inside a state updater (StrictMode runs those twice).
-  const previews = useRef({ a: null, b: null });
-  useEffect(() => () => {
-    revoke(previews.current.a);
-    revoke(previews.current.b);
+  // Latest preview URLs and request counters, so replacing/removing an image (and unmounting) can free
+  // the old URL and ignore a slow preview that arrives after the image was replaced.
+  const previews = useRef({});
+  const tokens = useRef({});
+  useEffect(() => () => Object.values(previews.current).forEach(revoke), []);
+
+  const patchSlot = useCallback((id, changes) => {
+    setSlots((prev) => ({ ...prev, [id]: { ...prev[id], ...changes } }));
   }, []);
 
-  const images = useMemo(() => {
-    if (!a.file) return [];
-    const list = [{ file: a.file, modality: a.modality }];
-    if (b.file) list.push({ file: b.file, modality: b.modality });
-    return list;
-  }, [a, b]);
-  const mode = useMemo(() => analysisMode(images), [images]);
-
-  const clearResults = useCallback(() => {
-    setChat([]);
-    setResult(null);
-    setResultWasTwoImage(false);
-    setLatest({ scan: null, compare: null });
-    setError(null);
-  }, []);
-
-  const setImage = useCallback((which, file, { reveal = true } = {}) => {
-    if (!file) return;
-    revoke(previews.current[which]);
-    const preview = URL.createObjectURL(file);
-    previews.current[which] = preview;
-    (which === 'a' ? setA : setB)((prev) => ({ ...prev, file, preview }));
-    clearResults();                                          // old answers describe the old imagery
-    setActiveLayer(which === 'a' ? 'imageA' : 'imageB');
-    if (reveal) setViewMode('inputs');                       // a map capture stays on the map
-  }, [clearResults]);
-
-  const setModality = useCallback((which, modality) => {
-    (which === 'a' ? setA : setB)((prev) => ({ ...prev, modality }));
-  }, []);
-
-  const removeImageB = useCallback(() => {
-    revoke(previews.current.b);
-    previews.current.b = null;
-    setB((prev) => emptySlot(prev.modality));
-    if (activeLayer === 'imageB' || activeLayer === 'evidence') setActiveLayer('imageA');
-    // A change-detection/fusion result describes a pairing that no longer exists: clear it, and
-    // leave a note in the conversation record saying so (the earlier messages stay as history).
-    if (resultWasTwoImage) {
-      setResult(null);
-      setResultWasTwoImage(false);
-      setLatest((prev) => ({ ...prev, compare: null }));
-      setChat((prev) => [...prev, { role: 'system', content: 'Image B was removed; the previous two-image result was cleared.' }]);
-    }
-  }, [activeLayer, resultWasTwoImage]);
-
-  // imagesOverride / historyOverride let a caller run on an image that has only just been set (state
-  // has not re-rendered yet); revealEvidence=false keeps the viewer where it is.
-  const run = useCallback(async ({ kind, query, adapter = 'general', userEntry, useBoth, imagesOverride, historyOverride, revealEvidence = true }) => {
-    if (isExecuting) return null;
-    if (!a.file && !imagesOverride) {
-      setError('Add Image A in the Imagery panel first.');
-      return null;
-    }
-    const runImages = imagesOverride ?? (useBoth ? images : images.slice(0, 1));
-    const history = [...(historyOverride ?? chat), userEntry];
-    setChat(history);
-    setError(null);
-    setIsExecuting(true);
-    setBusy(kind);
+  // Browsers cannot draw a TIFF, so the backend renders it to a PNG with the loader the analysis uses.
+  const renderTiff = useCallback(async (id, file, modality) => {
+    tokens.current[id] = (tokens.current[id] || 0) + 1;
+    const token = tokens.current[id];
+    patchSlot(id, { previewState: 'loading', previewError: null });
     try {
-      const data = await requestAnalysis({ query, adapter, images: runImages, history });
-      setResult(data);
-      setResultWasTwoImage(runImages.length === 2);
-      setChat((prev) => [...prev, { role: 'ai', content: data.answer }]);
-      // The backend draws detected regions / the change overlay / the fused composite into the
-      // evidence image, so show it for scans and two-image runs.
-      if (revealEvidence && data.visual_evidence_url && (adapter !== 'general' || runImages.length === 2)) {
+      const url = URL.createObjectURL(await requestPreview({ file, modality }));
+      if (tokens.current[id] !== token) { revoke(url); return; }         // replaced while rendering
+      revoke(previews.current[id]);
+      previews.current[id] = url;
+      patchSlot(id, { preview: url, previewState: 'ready' });
+    } catch (err) {
+      if (tokens.current[id] !== token) return;
+      patchSlot(id, { preview: null, previewState: 'failed', previewError: err.message });
+    }
+  }, [patchSlot]);
+
+  const setImage = useCallback((id, file, { reveal = true, modality, meta = null } = {}) => {
+    if (!file) return;
+    tokens.current[id] = (tokens.current[id] || 0) + 1;      // any preview still rendering is now stale
+    revoke(previews.current[id]);
+    previews.current[id] = null;
+    const tiff = isTiffFile(file);
+    const chosen = FIXED_MODALITY[id] ?? modality ?? slots[id].modality;
+    let preview = null;
+    if (!tiff) {
+      preview = URL.createObjectURL(file);
+      previews.current[id] = preview;
+    }
+    setSlots((prev) => ({ ...prev, [id]: { file, preview, previewState: tiff ? 'loading' : 'ready', previewError: null, modality: chosen, meta } }));
+    if (tiff) renderTiff(id, file, chosen);
+    setRuns((prev) => dropRunsFor(prev, id));                // old answers describe the old imagery
+    if (id === 'a') {
+      setChat([]);
+      setError(null);
+    }
+    setActiveLayer(id);
+    if (reveal) setViewMode('inputs');                       // a map capture stays on the map
+  }, [renderTiff, slots]);
+
+  const removeImage = useCallback((id) => {
+    tokens.current[id] = (tokens.current[id] || 0) + 1;
+    revoke(previews.current[id]);
+    previews.current[id] = null;
+    setSlots((prev) => ({ ...prev, [id]: emptySlot(FIXED_MODALITY[id] ?? prev[id].modality) }));
+    setRuns((prev) => dropRunsFor(prev, id));
+    if (id === 'a') setChat([]);
+    setActiveLayer((layer) => (layer === id || layer === 'evidence' || layer === 'swipe' ? id : layer));
+  }, []);
+
+  // Sensor type of the single image (Imagery), or of BOTH images of a change-detection pair
+  const setModality = useCallback((id, modality) => {
+    const ids = id === 'before' || id === 'after' ? ['before', 'after'] : [id];
+    ids.forEach((which) => {
+      if (FIXED_MODALITY[which]) return;
+      const slot = slots[which];
+      if (slot.modality === modality) return;
+      patchSlot(which, { modality });
+      if (slot.file && isTiffFile(slot.file)) renderTiff(which, slot.file, modality);   // SAR is despeckled in the preview
+    });
+  }, [slots, patchSlot, renderTiff]);
+
+  // Runs one analysis and records it. `pair` marks two-image runs so their messages stay out of the
+  // single-image model context. Resolves to { data, run }, or null when it failed or one is running.
+  const execute = useCallback(async ({
+    kind, title, query, adapter = 'general', images, history, userEntry, errorScope, pair = false, revealEvidence = true, meta = null,
+  }) => {
+    if (isExecuting) return null;
+    const scope = pair ? { scope: 'pair' } : {};
+    setChat((prev) => [...prev, { ...userEntry, ...scope }]);
+    setError(null);
+    setFocus(null);
+    setIsExecuting(true);
+    setBusy(kind === 'scan' ? `scan:${adapter}` : kind);
+    try {
+      const data = await requestAnalysis({ query, adapter, images, history });
+      const run = makeRun({ kind, title, data, adapter: kind === 'scan' ? adapter : null, meta });
+      setRuns((prev) => addRun(prev, run));
+      setChat((prev) => [...prev, { role: 'ai', content: data.answer, ...scope }]);
+      // The backend draws detected regions / the change overlay / the fused composite into the evidence
+      // image, so show it for scans and two-image runs.
+      if (revealEvidence && data.visual_evidence_url && isAnnotated(kind)) {
         setViewMode('inputs');
         setActiveLayer('evidence');
       }
-      return data;
+      return { data, run };
     } catch (err) {
-      setError(err.message);
+      setError({ message: err.message, scope: errorScope });
       return null;
     } finally {
       setIsExecuting(false);
       setBusy(null);
     }
-  }, [a.file, images, chat, isExecuting]);
+  }, [isExecuting]);
 
-  const sendMessage = useCallback((text) => run({
-    kind: 'chat', query: text, adapter: 'general', userEntry: { role: 'user', content: text }, useBoth: images.length === 2,
-  }), [run, images.length]);
+  const needImage = (id, scope, message) => {
+    if (slots[id].file) return true;
+    setError({ message, scope });
+    return false;
+  };
+
+  const sendMessage = useCallback(async (text) => {
+    if (!needImage('a', 'assistant', 'Add an image in the Imagery panel first.')) return null;
+    const out = await execute({
+      kind: 'chat', title: short(text), query: text, images: [asImage(slots.a)], errorScope: 'assistant',
+      history: [...forSingleImageModel(chat), { role: 'user', content: text }], userEntry: { role: 'user', content: text },
+    });
+    return out?.data ?? null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [execute, slots, chat]);
 
   const runScan = useCallback(async (adapter) => {
-    const data = await run({
-      kind: `scan:${adapter}`, query: DEFAULT_QUERIES.scan, adapter,
-      userEntry: { role: 'system', content: `Initiating ${adapter} scan...` }, useBoth: false,
+    if (!needImage('a', 'scans', 'Add an image in the Imagery panel first.')) return null;
+    const entry = { role: 'system', content: `Initiating ${adapter} scan...` };
+    const out = await execute({
+      kind: 'scan', adapter, title: `${adapter[0].toUpperCase()}${adapter.slice(1)} scan`, query: DEFAULT_QUERIES.scan,
+      images: [asImage(slots.a)], errorScope: 'scans', history: [...forSingleImageModel(chat), entry], userEntry: entry,
+      meta: slots.a.meta,
     });
-    if (data) setLatest((prev) => ({ ...prev, scan: { adapter, answer: data.answer } }));
-    return data;
-  }, [run]);
+    return out?.data ?? null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [execute, slots, chat]);
 
-  // Ask about (or scan) a captured map view. The view replaces Image A, the answer lands in the shared
-  // conversation, and the viewer stays on the map. Returns the API response, or null on failure.
-  const analyzeView = useCallback(async (file, { question, adapter = 'general' }) => {
-    setImage('a', file, { reveal: false });
+  const runChange = useCallback(async (text) => {
+    if (!slots.before.file || !slots.after.file) {
+      setError({ message: 'Add both the Before and the After image first.', scope: 'change' });
+      return null;
+    }
+    if (slots.before.modality !== slots.after.modality) {
+      setError({ message: 'Before and After must be the same sensor type. To combine optical and SAR, use Optical–SAR fusion.', scope: 'change' });
+      return null;
+    }
+    const query = (text || '').trim() || DEFAULT_QUERIES.change;
+    const out = await execute({
+      kind: 'change', title: 'Change detection', query, images: [asImage(slots.before), asImage(slots.after)],
+      errorScope: 'change', pair: true, history: [], userEntry: { role: 'user', content: query },
+    });
+    return out?.data ?? null;
+  }, [execute, slots]);
+
+  const runFusion = useCallback(async (text) => {
+    if (!slots.optical.file || !slots.sar.file) {
+      setError({ message: 'Add both the optical and the SAR image first.', scope: 'fusion' });
+      return null;
+    }
+    const query = (text || '').trim() || DEFAULT_QUERIES.fusion;
+    const out = await execute({
+      kind: 'fusion', title: 'Optical–SAR fusion', query, images: [asImage(slots.optical), asImage(slots.sar)],
+      errorScope: 'fusion', pair: true, history: [], userEntry: { role: 'user', content: query },
+    });
+    return out?.data ?? null;
+  }, [execute, slots]);
+
+  // Ask about (or scan) a captured map view. The view replaces the single image, the answer lands in
+  // the shared conversation, and the viewer stays on the map. `modality` is 'sar' for the SAR layer.
+  const analyzeView = useCallback(async (file, { question, adapter = 'general', modality = 'optical', bounds = null, zoom = null }) => {
+    setImage('a', file, { reveal: false, modality });
     const isScan = adapter !== 'general';
-    const query = isScan ? DEFAULT_QUERIES.scan : question;
-    const data = await run({
-      kind: isScan ? `scan:${adapter}` : 'chat', query, adapter,
-      userEntry: isScan ? { role: 'system', content: `Initiating ${adapter} scan...` } : { role: 'user', content: question },
-      useBoth: false, imagesOverride: [{ file, modality: 'optical' }], historyOverride: [], revealEvidence: false,
+    const entry = isScan ? { role: 'system', content: `Initiating ${adapter} scan...` } : { role: 'user', content: question };
+    const out = await execute({
+      kind: isScan ? 'scan' : 'chat', adapter, title: isScan ? `${adapter[0].toUpperCase()}${adapter.slice(1)} scan` : short(question),
+      query: isScan ? DEFAULT_QUERIES.scan : question, images: [{ file, modality }], errorScope: 'map',
+      history: [entry], userEntry: entry, revealEvidence: false, meta: bounds ? { bounds, zoom } : null,
     });
-    if (data && isScan) setLatest((prev) => ({ ...prev, scan: { adapter, answer: data.answer } }));
-    return data;
-  }, [run, setImage]);
+    return out?.data ?? null;
+  }, [execute, setImage]);
 
-  const runCompare = useCallback(async (text) => {
-    const query = (text || '').trim() || (mode.id === 'fusion' ? DEFAULT_QUERIES.fusion : DEFAULT_QUERIES.change);
-    const data = await run({ kind: 'compare', query, adapter: 'general', userEntry: { role: 'user', content: query }, useBoth: true });
-    if (data) setLatest((prev) => ({ ...prev, compare: { mode: mode.id, answer: data.answer } }));
-    return data;
-  }, [run, mode.id]);
+  // ---- report ----
+  const reportRun = useMemo(() => pickReportRun(runs, reportRunId), [runs, reportRunId]);
+
+  // Build the PDF for the chosen run with the whole conversation. Resolves to { url, filename, error }:
+  // if the rebuild fails the run's own PDF (its conversation up to that point) is offered instead.
+  const prepareReport = useCallback(async (base = BACKEND_URL) => {
+    if (!reportRun) return { url: null, filename: null, error: 'Run an analysis first.' };
+    const filename = reportFileName(reportRun.data);
+    try {
+      const out = await requestReport({ sessionId: reportRun.sessionId, history: chat, mapLink: mapLink(reportRun.meta), baseUrl: base });
+      if (out.report_download_url) return { url: `${base}${out.report_download_url}`, filename, error: null };
+      throw new Error(out.report_error || 'The report could not be built.');
+    } catch (err) {
+      const own = reportRun.data?.report_download_url;
+      if (own) return { url: `${base}${own}`, filename, error: null, fallback: err.message };
+      return { url: null, filename, error: err.message };
+    }
+  }, [reportRun, chat]);
+
+  const latest = useMemo(() => ({
+    scan: latestRun(runs, ['scan']),
+    change: latestRun(runs, ['change']),
+    fusion: latestRun(runs, ['fusion']),
+    annotated: latestRun(runs, ['scan', 'change', 'fusion']),
+  }), [runs]);
+
+  // Show one numbered area of a scan on the image: open the highlights and zoom to it
+  const focusArea = useCallback((box) => {
+    setViewMode('inputs');
+    setActiveLayer('evidence');
+    setFocus({ box, token: Date.now() });
+  }, []);
+
+  const errorFor = useCallback((scope) => (error && error.scope === scope ? error.message : null), [error]);
 
   return {
-    slots: { a, b }, images, mode,
-    setImage, setModality, removeImageB,
-    viewMode, setViewMode, activeLayer, setActiveLayer,
-    chat, result, latest, error, isExecuting, busy,
-    sendMessage, runScan, runCompare, analyzeView, dismissError: () => setError(null),
+    slots, latest, runs, reportRun, reportRunId, selectReportRun: setReportRunId, prepareReport,
+    setImage, removeImage, setModality,
+    viewMode, setViewMode, activeLayer, setActiveLayer, focus, focusArea,
+    chat, error, errorFor, isExecuting, busy,
+    sendMessage, runScan, runChange, runFusion, analyzeView, dismissError: () => setError(null),
   };
 }
