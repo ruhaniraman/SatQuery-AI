@@ -48,7 +48,7 @@ def test_general_single_image_trace_is_honest(client):
     assert "VerifierNode" not in str(tr) and "BigEarthNet" not in str(tr)
     tel = tr["telemetry"]
     assert tel["active_adapter"] is None and "adapters disabled" in tel["model_used"]
-    assert tel["inference"] == "free-text generation" and tel["max_new_tokens"] >= 512
+    assert tel["inference"].startswith("free-text generation") and tel["max_new_tokens"] >= 512
 
 
 def test_grid_scan_trace_names_the_adapter_and_its_scoring(client):

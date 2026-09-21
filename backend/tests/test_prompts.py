@@ -12,7 +12,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from agent_manager.prompts import (  # noqa: E402
     MAX_HISTORY_CHARS_PER_TURN,
+    QUADRANT_NAMES,
     REPLY_WORD_LIMIT,
+    build_general_messages,
+    build_question_text,
+    describe_first_enabled,
+    describe_quadrant_prompt,
+    describe_region_prompt,
+    format_scene_description,
     general_system_prompt,
     history_for_model,
 )
@@ -34,13 +41,14 @@ def test_every_free_text_prompt_asks_for_a_bounded_reply():
 
 def test_prompts_ask_for_words_not_invented_numbers():
     assert "Amounts in words" in general_system_prompt()
+    assert "Measured facts" in general_system_prompt()
     assert "in words" in fusion_system_prompt() and "not numbers" in fusion_system_prompt()
 
 
 def test_prompts_keep_the_grounding_structure_and_an_abstain_option():
     for text in (general_system_prompt(), fusion_system_prompt()):
         assert "OBSERVATIONS" in text and "ASSESSMENT" in text and "cannot answer" in text
-    assert "never assume" in general_system_prompt()
+    assert "never assume" in general_system_prompt().lower()
 
 
 def test_change_prompt_stays_consistent_with_the_pixel_analysis():
@@ -91,12 +99,13 @@ def count():
 
 
 def test_prompt_token_budgets(count):
-    """Regression guard: measured at 91 / 158 / 112 / 135 / 165 when written (were 110 / 164 / 162 /
-    193 / 221). Generous headroom, but a prompt that balloons again fails here."""
-    assert count(general_system_prompt("optical")) <= 105
-    assert count(general_system_prompt("sar")) <= 165
-    assert count(build_change_prompt(REGIONS, (512, 512))) <= 130
-    assert count(build_change_prompt(REGIONS, (512, 512), modality="sar")) <= 150
+    """Regression guard. Change/fusion prompts: measured at 112 / 135 / 165 (were 162 / 193 / 221).
+    The general prompt was 91 tokens; it is deliberately longer now (concrete-detail instructions plus a
+    style example) to fight vague answers. Generous headroom, but a prompt that balloons fails here."""
+    assert count(general_system_prompt("optical")) <= 330
+    assert count(general_system_prompt("sar")) <= 390
+    assert count(build_change_prompt(REGIONS, (512, 512))) <= 230
+    assert count(build_change_prompt(REGIONS, (512, 512), modality="sar")) <= 250
     assert count(fusion_system_prompt()) <= 180
 
 
@@ -160,3 +169,52 @@ def test_vlm_bridge_sends_prompt_unwrapped_with_system_role_and_model_device(cli
     assert msgs[1]["content"][-1] == {"type": "text", "text": "Describe the scene."}   # no wrapper header
     assert calls["n_images"] == 1 and calls["adapters_disabled"] and calls["max_new_tokens"] == 1024
     assert calls["decoded"] == [[3, 4]]
+
+
+# ------------------------------------------------------------------ concrete-answer prompt + describe-first pass
+
+def test_general_prompt_asks_for_located_concrete_detail_not_brevity():
+    text = general_system_prompt()
+    assert "WHERE" in text and "specific" in text.lower()
+    assert REPLY_WORD_LIMIT >= 150
+    assert "under 120 words" not in text
+
+
+def test_question_text_carries_facts_and_description_when_given():
+    plain = build_question_text("what is here?")
+    assert plain == "what is here?"
+    full = build_question_text("what is here?", "green 40%", "upper-left: river")
+    assert "Measured facts" in full and "green 40%" in full
+    assert "upper-left: river" in full and full.rstrip().endswith("Question: what is here?")
+
+
+def test_general_messages_put_facts_in_the_image_turn_only():
+    msgs = build_general_messages("q?", True, None, "optical", scene_facts="F", scene_description="D")
+    assert msgs[0]["role"] == "system" and "F" not in msgs[0]["content"]
+    last = msgs[-1]["content"]
+    assert last[0] == {"type": "image"} and "F" in last[1]["text"] and "D" in last[1]["text"]
+    no_image = build_general_messages("q?", False, None, "optical", scene_facts="F", scene_description="D")
+    assert no_image[-1] == {"role": "user", "content": "q?"}
+
+
+def test_scene_description_lists_quadrants_in_order_and_skips_blanks():
+    text = format_scene_description("A river valley.", {"lower-right": "houses", "upper-left": "forest", "upper-right": "  "})
+    assert text.splitlines() == ["A river valley.", "upper-left: forest", "lower-right: houses"]
+    assert format_scene_description("", None) == ""
+    assert "upper-left" in describe_quadrant_prompt(QUADRANT_NAMES[0])
+
+
+def test_describe_first_can_be_switched_off(monkeypatch):
+    monkeypatch.delenv("DESCRIBE_FIRST", raising=False)
+    assert describe_first_enabled()
+    monkeypatch.setenv("DESCRIBE_FIRST", "0")
+    assert not describe_first_enabled()
+
+
+def test_the_region_prompt_asks_for_prose_and_does_not_prime_the_model_with_things_to_find():
+    text = describe_region_prompt("centre")
+    assert "centre area" in text and "plain prose" in text and "no list, no numbering" in text
+    assert "two to four sentences" in text                              # fuller than the old 'two or three short'
+    for priming in ("water", "buildings", "roads", "excavated"):
+        assert priming not in text.lower(), priming
+    assert "brightness patterns, not colours" in describe_region_prompt("centre", "sar")

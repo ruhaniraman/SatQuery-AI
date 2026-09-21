@@ -45,6 +45,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "agent_manager.agent_controller", fake_mod)
     monkeypatch.chdir(tmp_path)                            # reports/ and temp_* land here
+    monkeypatch.setenv("DESCRIBE_FIRST", "0")              # tests that want the extra caption calls turn it on
+    monkeypatch.setenv("CHANGE_EVIDENCE_REPORT", "0")      # ... and the evidence-built comparison likewise
 
     import main_api
     real_vlm = main_api.shared_vram_caller           # kept so a test can exercise the real bridge

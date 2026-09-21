@@ -10,12 +10,33 @@ from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, BitsAnd
 from peft import PeftModel
 from geospatial_preprocessing.geotiff_loader import load_and_standardize_image
 from agent_manager.grid_scan import DEFAULT_YES_THRESHOLD, merge_positive_tiles, tile_windows, yes_probability
-from agent_manager.prompts import DEFAULT_MAX_NEW_TOKENS, build_general_messages
+from agent_manager.prompts import (
+    DEFAULT_MAX_NEW_TOKENS,
+    DESCRIBE_MAX_NEW_TOKENS,
+    QUADRANT_MAX_NEW_TOKENS,
+    QUADRANT_NAMES,
+    build_general_messages,
+    describe_first_enabled,
+    describe_quadrant_prompt,
+    describe_scene_prompt,
+    format_scene_description,
+)
 
 # Cap on pixels per image handed to Qwen2-VL (each 28x28 patch is one visual token, so this is
 # ~1280 tokens). Without it a large GeoTIFF or the stitched before|after image can OOM a small
 # GPU; the processor downsizes anything bigger. A starting guess, not a tuned value.
-MAX_PIXELS = 1280 * 28 * 28
+# Env SATQUERY_MAX_PIXELS raises it (more detail on big scenes, more VRAM and latency).
+MAX_PIXELS = int(os.environ.get("SATQUERY_MAX_PIXELS", 1280 * 28 * 28))
+# Small images are upscaled to at least this many pixels (~256 visual tokens) so a thumbnail is
+# not seen at a handful of patches.
+MIN_PIXELS = 256 * 28 * 28
+
+# The fixed yes/no question each LoRA adapter answers (tied to how the adapters were fine-tuned).
+ADAPTER_QUESTIONS = {
+    "mining": " Is there a massive extraction pit or mining crater in this image? Answer ONLY 'yes' or 'no'.",
+    "deforestation": " Is there visible deforestation, active logging, or clear-cut land in this image? Answer ONLY 'yes' or 'no'.",
+    "agriculture": " Are there distinct, green agricultural fields or cultivated crop rows in this image? Answer ONLY 'yes' or 'no'.",
+}
 
 
 class SatQueryEngine:
@@ -40,7 +61,7 @@ class SatQueryEngine:
             bnb_4bit_compute_dtype=torch.float16
         )
 
-        self.processor = AutoProcessor.from_pretrained(base_model_id, max_pixels=MAX_PIXELS)
+        self.processor = AutoProcessor.from_pretrained(base_model_id, min_pixels=MIN_PIXELS, max_pixels=MAX_PIXELS)
         # Batched last-token scoring needs the real final token at index -1 in every row
         self.processor.tokenizer.padding_side = "left"
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
@@ -90,14 +111,13 @@ class SatQueryEngine:
             self._yn_ids = (ids(["yes", "Yes", " yes", " Yes", "YES"]), ids(["no", "No", " no", " No", "NO"]))
         return self._yn_ids
 
-    def _grid_classification(self, img, internal_prompt, grid_size=(4, 4),
-                             threshold=DEFAULT_YES_THRESHOLD, batch_size=4):
-        """Asks the model a yes/no question about every grid cell and returns merged region boxes.
+    def _grid_probs(self, img, internal_prompt, grid_size=(4, 4), batch_size=4):
+        """Asks the model a yes/no question about every grid cell; returns P(yes) as a (rows, cols) array.
 
         Each cell is scored from the next-token logits (P(yes) vs P(no)) in ONE forward pass per
         batch, rather than free-text generation per cell, so the threshold is tunable and the 16
         cells cost 4 batched passes instead of 16 sequential generate() calls. Cells are shown with
-        surrounding context, and edge-adjacent positive cells are merged into a single region.
+        surrounding context.
         """
         rows, cols = grid_size
         width, height = img.size
@@ -123,31 +143,62 @@ class SatQueryEngine:
             last = out.logits[:, -1, :].float().cpu().numpy()
             probs[start:start + len(chunk)] = yes_probability(last, yes_ids, no_ids)
 
-        positive = np.zeros((rows, cols), dtype=bool)
-        for (r, c, _), p in zip(windows, probs):
-            positive[r, c] = p >= threshold
-        print("Grid P(yes):\n" + np.array2string(probs.reshape(rows, cols), precision=2))
-        return merge_positive_tiles(positive)
+        return probs.reshape(rows, cols)
 
-    def query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None) -> str:
+    def _grid_classification(self, img, internal_prompt, grid_size=(4, 4),
+                             threshold=DEFAULT_YES_THRESHOLD, batch_size=4):
+        """The grid scan as merged region boxes: edge-adjacent positive cells become one region."""
+        probs = self._grid_probs(img, internal_prompt, grid_size, batch_size)
+        print("Grid P(yes):\n" + np.array2string(probs, precision=2))
+        return merge_positive_tiles(probs >= threshold)
+
+    def scan_scores(self, img_array, adapter):
+        """P(yes) grid (4x4 ndarray) of one LoRA's question over a whole image, e.g. to compare two dates."""
+        if adapter not in ADAPTER_QUESTIONS:
+            raise ValueError(f"no scan question for adapter {adapter!r}")
+        with self.lock:
+            self.model.set_adapter(adapter)
+            return self._grid_probs(Image.fromarray(img_array), ADAPTER_QUESTIONS[adapter].strip())
+
+    def _generate_texts(self, message_sets, images, max_new_tokens):
+        """Batched free-text generation with the LoRA adapters disabled (base weights). One reply per
+        message set. Left padding (set in __init__) makes the prompt length identical across rows."""
+        texts = [self.processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True) for m in message_sets]
+        inputs = self.processor(text=texts, images=images, return_tensors="pt", padding=True).to(self.model.device)
+        with torch.no_grad():
+            with self.model.disable_adapter():
+                output_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens, repetition_penalty=1.05)
+        prompt_len = inputs["input_ids"].shape[1]
+        return [self.processor.decode(ids[prompt_len:], skip_special_tokens=True).strip() for ids in output_ids]
+
+    def _describe_scene(self, img, modality="optical"):
+        """First pass for the general path: a whole-image description plus one short caption per
+        quadrant (exact quadrants, no context padding). Returns the combined text for the prompt."""
+        def one(text):
+            return [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": text}]}]
+
+        overview = self._generate_texts([one(describe_scene_prompt(modality))], [img], DESCRIBE_MAX_NEW_TOKENS)[0]
+        width, height = img.size
+        windows = tile_windows(width, height, 2, 2, context=0.0)   # row-major == QUADRANT_NAMES order
+        tiles = [img.crop(box) for _, _, box in windows]
+        captions = self._generate_texts(
+            [one(describe_quadrant_prompt(name, modality)) for name in QUADRANT_NAMES], tiles, QUADRANT_MAX_NEW_TOKENS
+        )
+        return format_scene_description(overview, dict(zip(QUADRANT_NAMES, captions)))
+
+    def query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None, scene_facts: str = "") -> str:
         """Thread-safe entry point: only one request may switch adapters and generate at a time."""
         with self.lock:
-            return self._query(prompt, image_path, image_bytes, explicit_adapter, max_new_tokens, modality, chat_history)
+            return self._query(prompt, image_path, image_bytes, explicit_adapter, max_new_tokens, modality, chat_history, scene_facts)
 
-    def _query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None) -> str:
+    def _query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None, scene_facts: str = "") -> str:
         has_image = (image_path is not None and os.path.exists(image_path)) or (image_bytes is not None)
         
         # Override with the UI button's choice
         active_adapter = explicit_adapter
 
         # --- 1. PROMPT AUGMENTATION (Neutral Format) ---
-        internal_prompt = prompt
-        if active_adapter == "mining":
-            internal_prompt += " Is there a massive extraction pit or mining crater in this image? Answer ONLY 'yes' or 'no'."
-        elif active_adapter == "deforestation":
-            internal_prompt += " Is there visible deforestation, active logging, or clear-cut land in this image? Answer ONLY 'yes' or 'no'."
-        elif active_adapter == "agriculture":
-            internal_prompt += " Are there distinct, green agricultural fields or cultivated crop rows in this image? Answer ONLY 'yes' or 'no'."
+        internal_prompt = prompt + ADAPTER_QUESTIONS.get(active_adapter, "")
         # Single direct pass
         if active_adapter == "general":
             context_manager = self.model.disable_adapter()
@@ -177,7 +228,13 @@ class SatQueryEngine:
 
         if active_adapter == "general":
             # Real system role, prior turns (so follow-ups have context), then the current question
-            messages = build_general_messages(prompt, has_image, chat_history, modality)
+            scene_description = ""
+            if has_image and describe_first_enabled():
+                scene_description = self._describe_scene(img, modality)
+            messages = build_general_messages(
+                prompt, has_image, chat_history, modality,
+                scene_facts=scene_facts, scene_description=scene_description,
+            )
 
         if active_adapter in ["mining", "deforestation", "agriculture"] and has_image:
             # 4x4 Grid = 16 precise squares. The AI answers Yes/No for each square.
@@ -198,7 +255,7 @@ class SatQueryEngine:
 
         with torch.no_grad():
             with context_manager:
-                output_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+                output_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens, repetition_penalty=1.05)
 
         generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
         raw_response = self.processor.decode(generated_ids, skip_special_tokens=True).strip()

@@ -25,14 +25,17 @@ from change_detection.cdvqa_engine import ChangeDetectionEngine
 from geospatial_preprocessing.spatial_alignment import match_and_align_geotiffs, AlignmentError
 from geospatial_preprocessing.geotiff_loader import load_and_standardize_image, load_and_standardize_pair
 from geospatial_preprocessing.payload_validation import validate_downstream_payload
-from geospatial_preprocessing.standard_alignment import align_standard_images
+from geospatial_preprocessing.standard_alignment import align_with_status
 from geospatial_preprocessing.acquisition_date import extract_acquisition_date, resolve_temporal_order
 
 from agent_manager.agent_controller import get_agent, load_agent
 from report_retention import purge_old_reports, retention_hours
 from upload_validation import UploadTooLarge, detect_image_kind, max_request_bytes, max_upload_bytes, read_limited
 from agent_manager.schemas import ExecutionTrace, ImageInput, TaskType
-from agent_manager.prompts import DEFAULT_MAX_NEW_TOKENS, history_for_model
+from agent_manager.prompts import DEFAULT_MAX_NEW_TOKENS, describe_first_enabled, history_for_model
+from agent_manager.scene_stats import compute_scene_stats, format_scene_stats
+from agent_manager.scan_compare import summarize_scan_change
+from change_detection.change_report import compare_report_enabled, lora_compare_enabled
 from agent_manager.grid_scan import DEFAULT_CONTEXT, DEFAULT_YES_THRESHOLD
 
 from fusion.sar_optical_fusion import execute_optical_sar_fusion
@@ -340,8 +343,10 @@ def analyze(
                 os.makedirs(os.path.dirname(evidence_img_path), exist_ok=True)
                 shutil.copy(single_img_path, evidence_img_path)
 
+            scene_stats = compute_scene_stats(img_array, modality_a) if adapter == "general" else None
+            scene_facts = format_scene_stats(scene_stats)
             ai_answer = engine.query(prompt=query, image_path=single_img_path, explicit_adapter=adapter, modality=modality_a,
-                                    chat_history=parsed_history)
+                                    chat_history=parsed_history, scene_facts=scene_facts)
 
             if isinstance(ai_answer, str) and ai_answer.strip().startswith("[") and ai_answer.strip().endswith("]"):
                 try:
@@ -378,7 +383,11 @@ def analyze(
                 telemetry["grid_yes_threshold"] = DEFAULT_YES_THRESHOLD
                 telemetry["grid_tile_context"] = DEFAULT_CONTEXT
             else:
-                telemetry["inference"] = "free-text generation"
+                telemetry["inference"] = (
+                    "free-text generation after a describe-first pass (whole image + 4 quadrants)"
+                    if describe_first_enabled() else "free-text generation"
+                )
+                telemetry["measured_scene_facts"] = scene_facts or "unavailable"
                 telemetry["max_new_tokens"] = DEFAULT_MAX_NEW_TOKENS
                 telemetry["chat_turns_given_to_model"] = len(history_for_model(parsed_history, query))
             agent_trace = _make_trace(
@@ -390,6 +399,8 @@ def analyze(
             
         elif task == TaskType.CHANGE_DETECTION:
             print("Routing to CDVQA Specialist via Agent Manager...")
+
+            alignment_warnings: List[str] = []
 
             # Check if we are dealing with geospatial data
             is_geospatial = temp_paths[0].lower().endswith('.tif')
@@ -439,7 +450,12 @@ def analyze(
                 # 2. ORB Alignment
                 try:
                     # align_standard_images automatically fixes the shape AND the sub-pixel camera shifts
-                    img_b, valid_mask = align_standard_images(img_a, img_b)
+                    img_b, valid_mask, align_note = align_with_status(img_a, img_b)
+                    if align_note:
+                        alignment_warnings.append(
+                            f"Image B could not be registered to Image A ({align_note}); it was only resized to fit, so "
+                            "pixel-level comparison is unreliable (different zoom, view or content is the usual cause)."
+                        )
                 except Exception as e:
                     print(f"ORB Alignment failed, falling back to simple resize: {e}")
                     img_b = cv2.resize(img_b, (shape_a[1], shape_a[0]), interpolation=cv2.INTER_LINEAR)
@@ -451,6 +467,18 @@ def analyze(
                     detail="Internal pipeline error: Image array validation failed before AI processing."
                 )
 
+            # Located evidence from the trained LoRAs: the same yes/no tile scan on both dates.
+            # Optical only (the adapters' training data is not recorded); a failure just omits it.
+            compose = compare_report_enabled()
+            scan_summaries = []
+            scanner = getattr(_agent(), "scan_scores", None) if compose and lora_compare_enabled() else None
+            if scanner and image_inputs[0].modality == "optical":
+                for scan_adapter in ("mining", "deforestation", "agriculture"):
+                    try:
+                        scan_summaries.append(summarize_scan_change(scan_adapter, scanner(img_a, scan_adapter), scanner(img_b, scan_adapter)))
+                    except Exception as err:
+                        print(f"LoRA scan comparison skipped for {scan_adapter}: {err}")
+
             # Route to our refactored, modular Hybrid Engine
             print("Routing to Hybrid CDVQA Specialist via Agent Manager...")
             cd_result = cd_engine.detect(
@@ -461,6 +489,10 @@ def analyze(
                 capture_dates=temporal_order.prompt_dates,
                 valid_mask=valid_mask,
                 modality=image_inputs[0].modality,
+                notes_fn=shared_vram_caller if describe_first_enabled() else None,
+                compose_report=compose,
+                scan_summaries=scan_summaries,
+                extra_warnings=alignment_warnings,
             )
             
             ai_answer = cd_result.explanation
@@ -475,15 +507,27 @@ def analyze(
             agent_trace = _make_trace(
                 session_id, task, routing_reason,
                 ["RuleBasedRouter", "InputPreprocessor", "SpatialAlignment" if is_geospatial else "OrbAlignment",
-                 "TemporalOrdering", "Hybrid-CDVQA-Engine", "Qwen2-VL-Bridge"],
+                 "TemporalOrdering", "Hybrid-CDVQA-Engine"]
+                + (["EvidenceReport"] if compose else [])
+                + ["Qwen2-VL-Bridge"],
                 {
                     **_model_telemetry(None),
                     "method": "Hybrid VLM + Spatial Analysis",
                     "sensor_type": image_inputs[0].modality,
                     "major_regions_detected": cd_result.major_regions_detected,
+                    "describe_first": describe_first_enabled(),
+                    "answer_source": (
+                        "assembled by code from measurements, flagged regions, LoRA scan scores and single-image "
+                        "model captions (the model did not write the conclusion)"
+                        if compose else "written by the model from the stitched before|after image"
+                    ),
+                    "subtle_regions_detected": cd_result.subtle_regions_detected,
+                    "lora_scans_compared": [x["name"] for x in scan_summaries],
+                    **({"comparison_details": cd_result.details} if cd_result.details else {}),
+                    "measured_before_after": cd_result.measured_facts or "unavailable",
                     "temporal_order": temporal_order.to_dict(),
                 },
-                warnings=loader_warnings + temporal_order.warnings,
+                warnings=loader_warnings + temporal_order.warnings + cd_result.warnings,
                 validation_status="image payload checks passed",
             )
         elif task == TaskType.OPTICAL_SAR_FUSION:

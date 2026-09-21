@@ -1,5 +1,6 @@
 """Prompt construction, yes/no logit scoring, tile merging, and the real grid scan driven by a fake model."""
 import contextlib
+import io
 import importlib
 import os
 import sys
@@ -220,6 +221,7 @@ def test_grid_scan_threshold_is_tunable(controller):
 def test_processor_is_capped_so_large_images_cannot_oom(controller):
     controller.load_agent()
     assert FakeProcessor.load_kwargs["max_pixels"] == controller.MAX_PIXELS == 1280 * 28 * 28
+    assert FakeProcessor.load_kwargs["min_pixels"] == controller.MIN_PIXELS   # tiny images get upscaled
 
 
 def test_importing_the_module_does_not_load_the_model(controller):
@@ -230,3 +232,93 @@ def test_importing_the_module_does_not_load_the_model(controller):
 
 def test_route_intent_dead_code_is_gone(controller):
     assert not hasattr(controller.SatQueryEngine, "route_intent")
+
+
+# ------------------------------------------------------------------ describe-first general path
+
+class GenProcessor:
+    """Records every chat template call and every batch; decodes row i of a batch to a numbered caption."""
+    def __init__(self):
+        self.tokenizer = FakeTokenizer()
+        self.templates, self.batches = [], []
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+        self.templates.append(messages)
+        return "TEXT"
+    def __call__(self, text, images, return_tensors, padding):
+        self.batches.append(len(images))
+        return FakeInputs(input_ids=types.SimpleNamespace(shape=(1, 5)), n=len(images))
+    def decode(self, ids, skip_special_tokens=True):
+        return "caption-" + str(ids)
+
+
+class GenModel:
+    device = "cpu"
+    def __init__(self):
+        self.generate_calls, self.adapter_disabled = [], 0
+    @contextlib.contextmanager
+    def disable_adapter(self):
+        self.adapter_disabled += 1
+        yield
+    def generate(self, **kw):
+        self.generate_calls.append(kw)
+        n = kw["n"]
+        return [list(range(5)) + [100 + i] for i in range(n)]
+
+
+def general_engine(controller):
+    eng = controller.load_agent()
+    eng.processor, eng.model = GenProcessor(), GenModel()
+    return eng
+
+
+def test_describe_scene_runs_one_overview_and_four_quadrants_with_adapters_off(controller):
+    eng = general_engine(controller)
+    text = eng._describe_scene(Image.new("RGB", (64, 64)))
+    assert eng.processor.batches == [1, 4]
+    assert eng.model.adapter_disabled == 2
+    assert all(kw["max_new_tokens"] > 0 and kw["repetition_penalty"] == 1.05 for kw in eng.model.generate_calls)
+    lines = text.splitlines()
+    assert lines[0].startswith("caption-") and [l.split(":")[0] for l in lines[1:]] == [
+        "upper-left", "upper-right", "lower-left", "lower-right"]
+
+
+def test_general_query_feeds_description_and_facts_to_the_answer_pass(controller, monkeypatch):
+    monkeypatch.setenv("DESCRIBE_FIRST", "1")
+    eng = general_engine(controller)
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, "PNG")
+    eng.query("what is here?", image_bytes=buf.getvalue(), explicit_adapter="general", scene_facts="FACTS-XYZ")
+    assert eng.processor.batches == [1, 4, 1]                      # overview, quadrants, then the answer
+    final_user = eng.processor.templates[-1][-1]["content"][-1]["text"]
+    assert "FACTS-XYZ" in final_user and "upper-left: caption-" in final_user and "what is here?" in final_user
+
+
+def test_describe_first_off_answers_in_a_single_pass(controller, monkeypatch):
+    monkeypatch.setenv("DESCRIBE_FIRST", "0")
+    eng = general_engine(controller)
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, "PNG")
+    eng.query("what is here?", image_bytes=buf.getvalue(), explicit_adapter="general", scene_facts="FACTS-XYZ")
+    assert eng.processor.batches == [1]
+    final_user = eng.processor.templates[-1][-1]["content"][-1]["text"]
+    assert "FACTS-XYZ" in final_user and "upper-left" not in final_user
+
+
+# ------------------------------------------------------------------ LoRA scan scores (used to compare two dates)
+
+def test_scan_scores_returns_the_probability_grid_under_the_named_adapter(controller):
+    FakeModel.positive = {5}
+    eng = controller.load_agent()
+    chosen = []
+    eng.model.set_adapter = chosen.append
+    grid = eng.scan_scores(np.zeros((64, 64, 3), np.uint8), "mining")
+    assert chosen == ["mining"] and grid.shape == (4, 4)
+    assert grid[1, 1] > 0.99 and grid.sum() < 1.5                     # only cell 5 == (1, 1) is positive
+
+
+def test_scan_scores_rejects_unknown_adapters_and_shares_the_scan_questions(controller):
+    eng = controller.load_agent()
+    with pytest.raises(ValueError):
+        eng.scan_scores(np.zeros((8, 8, 3), np.uint8), "general")
+    assert set(controller.ADAPTER_QUESTIONS) == {"mining", "deforestation", "agriculture"}
+    assert all("'yes' or 'no'" in q for q in controller.ADAPTER_QUESTIONS.values())

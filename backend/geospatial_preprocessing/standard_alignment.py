@@ -32,50 +32,57 @@ def _transform_is_plausible(matrix, inliers, shape) -> tuple:
     return True, ""
 
 
-def align_standard_images(img1: np.ndarray, img2: np.ndarray):
+def align_with_status(img1: np.ndarray, img2: np.ndarray):
     """Uses ORB to find matching features and performs a safe 2D affine warp.
 
-    Returns (aligned_img2, valid_mask): the mask is False where the warp pulled in pixels from
-    outside img2 (the filled border), so callers don't mistake that edge for real change.
+    Returns (aligned_img2, valid_mask, fallback_reason): the mask is False where the warp pulled in
+    pixels from outside img2 (the filled border), so callers don't mistake that edge for real change.
+    fallback_reason is "" when a feature-based warp was applied, otherwise why only a plain resize
+    was possible (the images then are not registered, which callers should report).
     """
     height, width = img1.shape[:2]
     all_valid = np.ones((height, width), dtype=bool)
     gray1 = cv2.cvtColor(img1, cv2.COLOR_RGB2GRAY)
     gray2 = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY)
-    
+
     orb = cv2.ORB_create(nfeatures=5000)
     kp1, des1 = orb.detectAndCompute(gray1, None)
     kp2, des2 = orb.detectAndCompute(gray2, None)
-    
+
     # If no features found, fallback safely
     if des1 is None or des2 is None:
-        return cv2.resize(img2, (width, height)), all_valid
-        
+        return cv2.resize(img2, (width, height)), all_valid, "no image features found"
+
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     matches = matcher.match(des1, des2)
     matches = sorted(matches, key=lambda x: x.distance)
-    
+
     keep = int(len(matches) * 0.15)
     matches = matches[:keep]
     if len(matches) < MIN_ORB_INLIERS:
         print(f"Only {len(matches)} candidate feature matches; falling back to resize.")
-        return cv2.resize(img2, (width, height)), all_valid
-    
+        return cv2.resize(img2, (width, height)), all_valid, f"only {len(matches)} matching features"
+
     points1 = np.zeros((len(matches), 2), dtype=np.float32)
     points2 = np.zeros((len(matches), 2), dtype=np.float32)
     for i, match in enumerate(matches):
         points1[i, :] = kp1[match.queryIdx].pt
         points2[i, :] = kp2[match.trainIdx].pt
-        
+
     transform_matrix, inliers = cv2.estimateAffinePartial2D(points2, points1, cv2.RANSAC)
-    
+
     ok, reason = _transform_is_plausible(transform_matrix, inliers, (height, width))
     if ok:
         # Use warpAffine instead of warpPerspective
         aligned_img2 = cv2.warpAffine(img2, transform_matrix, (width, height))
         src_ones = np.full(img2.shape[:2], 255, dtype=np.uint8)
         valid = cv2.warpAffine(src_ones, transform_matrix, (width, height)) == 255
-        return aligned_img2, valid
-    else:
-        print(f"Affine alignment rejected ({reason}), falling back to resize.")
-        return cv2.resize(img2, (width, height)), all_valid
+        return aligned_img2, valid, ""
+    print(f"Affine alignment rejected ({reason}), falling back to resize.")
+    return cv2.resize(img2, (width, height)), all_valid, reason
+
+
+def align_standard_images(img1: np.ndarray, img2: np.ndarray):
+    """align_with_status without the fallback reason: returns (aligned_img2, valid_mask)."""
+    aligned, valid, _ = align_with_status(img1, img2)
+    return aligned, valid

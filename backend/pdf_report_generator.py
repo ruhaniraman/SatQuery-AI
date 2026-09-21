@@ -173,6 +173,9 @@ def generate_pdf_report(
     # Temporal-order statement gets its own paragraph (the JSON dump below is length-truncated)
     trace_for_dump = json.loads(json.dumps(agent_execution_trace))
     temporal = (trace_for_dump.get("telemetry") or {}).pop("temporal_order", None)
+    # Supporting data of a comparison (shifts, scan scores, agreement) is printed as its own section
+    # below instead of as raw JSON; the on-screen answer stays short.
+    comparison_details = (trace_for_dump.get("telemetry") or {}).pop("comparison_details", None)
     summary_lines = []
     if trace_for_dump.get("task"):
         summary_lines.append(f"<b>Task:</b> {_safe(trace_for_dump['task'])} ({_safe(trace_for_dump.get('routing', 'rule-based'))} routing: {_safe(trace_for_dump.get('routing_reason', ''))})")
@@ -209,6 +212,25 @@ def generate_pdf_report(
     ]))
     story.append(two_col_table)
     story.append(Spacer(1, 8))
+
+    if isinstance(comparison_details, dict) and comparison_details:
+        story.append(Paragraph("COMPARISON DETAILS", styles["SectionHeading"]))
+        rows = []
+        for title, lines in comparison_details.items():
+            rows.append([Paragraph(_safe(str(title).upper()), styles["LabelText"])])
+            rows.extend([Paragraph(_safe(line), styles["BodyDark"])] for line in (lines or []))
+            rows.append([Spacer(1, 3)])
+        details_table = Table(rows, colWidths=[7.5 * inch])
+        details_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), card_bg),
+            ("BOX", (0, 0), (-1, -1), 0.75, border_color),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(details_table)
+        story.append(Spacer(1, 8))
 
     # Full trace, never truncated: audit data must not be silently cut. Preformatted text flows
     # across pages, so a long trace just makes the report longer.
