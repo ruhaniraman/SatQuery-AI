@@ -20,7 +20,7 @@ export default function Viewer({ ws, feature, onOpenFeature }) {
   const targets = feature.uploadTargets(ws);
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/10 bg-black/50 backdrop-blur-md" aria-label="Viewer">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/10 bg-black/30 backdrop-blur-md" aria-label="Viewer">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-white/10 px-3 py-2">
         <Segmented
           label="Viewer"

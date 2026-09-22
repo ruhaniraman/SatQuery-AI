@@ -8,6 +8,11 @@ const SUGGESTIONS = [
   'Describe the scene.',
 ];
 
+// Shown once, before any real conversation, so the panel doesn't feel unresponsive on first open. This
+// is rendered locally only - it is never pushed into ws.chat, so it never reaches the model as history,
+// never appears in the PDF report, and disappears as soon as a real message exists.
+const GREETING = "Hi! I'm the SatQuery-AI assistant. Add a satellite image and ask me anything about it — land cover, features, or what's visible in the scene.";
+
 function Message({ msg }) {
   if (msg.role === 'system') {
     return <p className="py-1 text-center text-[11px] italic text-slate-500">{msg.content}</p>;
@@ -54,10 +59,13 @@ export default function AssistantPanel({ ws, goTo }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto pr-1 sq-scroll" aria-live="polite">
+        {visible.length === 0 && (
+          <Message msg={{ role: 'ai', content: GREETING }} />
+        )}
+
         {visible.length === 0 && !isExecuting && (
           hasImage ? (
             <div className="space-y-3 pt-2">
-              <EmptyState icon={Bot} title="Ask about your imagery" />
               <div className="flex flex-wrap justify-center gap-2">
                 {SUGGESTIONS.map((s) => (
                   <button key={s} type="button" onClick={() => setText(s)} className="cursor-pointer rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition hover:border-blue-500/50 hover:text-blue-200">

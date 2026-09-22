@@ -52,7 +52,7 @@ export default function Dashboard() {
       <div className="sq-overlay pointer-events-none absolute inset-0" />
 
       <div className="relative z-10 flex h-full min-h-0 flex-col">
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/50 px-3 backdrop-blur-md">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 bg-black/30 px-3 backdrop-blur-md">
           {/* The logo sits in a column as wide as the nav rail (76px), so it is centred over the nav icons, and
               the title starts where the side panel starts (rail + the 12px gap of the layout below). */}
           <Link to="/" aria-label="SatQuery-AI home" className="flex items-center gap-3 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70" title="Back to home">
@@ -74,7 +74,7 @@ export default function Dashboard() {
           {panelOpen && (
             <aside
               aria-label={feature.title}
-              className="flex max-h-[46vh] w-full shrink-0 flex-col overflow-hidden rounded-xl border border-white/10 bg-black/50 backdrop-blur-md lg:max-h-none lg:w-[400px] xl:w-[430px]"
+              className="flex max-h-[46vh] w-full shrink-0 flex-col overflow-hidden rounded-xl border border-white/10 bg-black/30 backdrop-blur-md lg:max-h-none lg:w-[400px] xl:w-[430px]"
             >
               <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-5 py-3.5">
                 <div className="min-w-0">

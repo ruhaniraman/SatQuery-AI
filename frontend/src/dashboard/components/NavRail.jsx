@@ -7,7 +7,7 @@ import { GROUP_LABELS } from '../features';
 // divider and a small caption separate the groups (single-image tools, two-image tools, the report).
 export default function NavRail({ features, activeId, panelOpen, onSelect, ws }) {
   return (
-    <nav aria-label="Features" className="flex shrink-0 gap-1 rounded-xl border border-white/10 bg-black/50 p-2 backdrop-blur-md max-lg:items-center max-lg:overflow-x-auto lg:w-[76px] lg:flex-col">
+    <nav aria-label="Features" className="flex shrink-0 gap-1 rounded-xl border border-white/10 bg-black/30 p-2 backdrop-blur-md max-lg:items-center max-lg:overflow-x-auto lg:w-[76px] lg:flex-col">
       {features.map((feature, index) => {
         const Icon = feature.icon;
         const selected = feature.id === activeId && panelOpen;
