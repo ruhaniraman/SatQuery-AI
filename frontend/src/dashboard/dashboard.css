@@ -23,6 +23,16 @@
 }
 .sq-root[data-theme='dark'] { color-scheme: dark; }
 
+/* The logo is a mask: the drawing takes the colour below and the header shows through everywhere else
+   (white on the dark header, black on the light one). */
+.sq-logo-mark {
+  display: block;
+  background-color: #ffffff;
+  -webkit-mask: var(--sq-logo) center / contain no-repeat;
+  mask: var(--sq-logo) center / contain no-repeat;
+}
+.sq-root[data-theme='light'] .sq-logo-mark { background-color: #000000; }
+
 .sq-root[data-theme='light'] {
   color-scheme: light;
   --sq-overlay: linear-gradient(to bottom, rgba(248, 250, 252, 0.9) 0%, rgba(241, 245, 249, 0.78) 45%, rgba(248, 250, 252, 0.92) 100%);

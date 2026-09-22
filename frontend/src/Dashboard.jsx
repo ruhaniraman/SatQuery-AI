@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PanelLeftClose } from 'lucide-react';
 import earthBg from './assets/earth.jpeg';
-import logo from './assets/logo.jpeg';
+import logoMark from './assets/logo-mark.png';
 import './dashboard/dashboard.css';
 import { FEATURES, featureById } from './dashboard/features';
 import { useWorkspace } from './dashboard/hooks/useWorkspace';
@@ -11,6 +11,7 @@ import NavRail from './dashboard/components/NavRail';
 import Viewer from './dashboard/components/Viewer';
 import ThemeToggle from './dashboard/components/ThemeToggle';
 import StatusPill from './dashboard/components/StatusPill';
+import UserMenu from './dashboard/components/UserMenu';
 import { readTheme, saveTheme } from './dashboard/utils/theme';
 
 // Layout: header, then [feature nav] [active feature's panel] [viewer]. The viewer shows the live
@@ -56,13 +57,14 @@ export default function Dashboard() {
               the title starts where the side panel starts (rail + the 12px gap of the layout below). */}
           <Link to="/" aria-label="SatQuery-AI home" className="flex items-center gap-3 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70" title="Back to home">
             <span className="flex w-[76px] shrink-0 justify-center">
-              <img src={logo} alt="" className="h-10 w-10 rounded-xl bg-white object-contain p-0.5" />
+              <span role="img" aria-hidden="true" className="sq-logo-mark h-10 w-10" style={{ '--sq-logo': `url(${logoMark})` }} />
             </span>
             <span className="text-2xl font-bold leading-none tracking-wide">SatQuery-AI</span>
           </Link>
           <div className="flex items-center gap-2.5 pr-2">
             <StatusPill health={health} executing={ws.isExecuting} onRefresh={health.refresh} />
             <ThemeToggle theme={theme} onChange={changeTheme} />
+            <UserMenu />
           </div>
         </header>
 
