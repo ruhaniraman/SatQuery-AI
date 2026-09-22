@@ -234,3 +234,5 @@ temp_*
 temp_aligned_*
 
 CLAUDE.md
+# Local accounts database (backend/auth.py)
+backend/data/

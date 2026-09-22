@@ -37,8 +37,9 @@ export default function NavRail({ features, activeId, panelOpen, onSelect, ws })
             >
               {selected && <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-blue-400 max-lg:hidden" aria-hidden="true" />}
               <span className="relative">
-                <Icon size={20} />
-                {status === 'busy' && <Loader2 size={11} className="absolute -right-2 -top-2 animate-spin text-blue-300" aria-label="Working" />}
+                {status === 'busy'
+                  ? <Loader2 size={20} className="animate-spin text-blue-300" aria-label="Working" />
+                  : <Icon size={20} />}
                 {status === 'ready' && <span className="absolute -right-1.5 -top-1 h-2 w-2 rounded-full bg-blue-400 ring-2 ring-black/70" aria-hidden="true" />}
               </span>
               <span className="text-[10px] font-medium leading-none tracking-wide">{feature.label}</span>

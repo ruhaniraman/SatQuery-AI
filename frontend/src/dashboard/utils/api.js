@@ -94,15 +94,21 @@ export function buildAnalyzeFormData({ query, adapter = 'general', images, histo
   return form;
 }
 
-// `images` is [{ file, modality }] with Image A first. Resolves to the parsed response, or throws an
+// `images` is [{ file, modality }] with Image A first. `token`, when given, is sent as a Bearer header
+// so the backend adds this run to the signed-in account's report history (GET /auth/reports); anonymous
+// analysis works exactly the same otherwise. `signal`, when given (an AbortController's), lets the
+// caller stop the request; that rejection is an AbortError, passed through as-is rather than turned
+// into the generic "cannot reach the server" message. Resolves to the parsed response, or throws an
 // Error whose message is fit to show the user.
-export async function requestAnalysis({ query, adapter, images, history, fetchImpl = fetch, baseUrl = BACKEND_URL }) {
+export async function requestAnalysis({ query, adapter, images, history, token, signal, fetchImpl = fetch, baseUrl = BACKEND_URL }) {
   const body = buildAnalyzeFormData({ query, adapter, images, history });
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
   let response;
   try {
-    response = await fetchImpl(`${baseUrl}/analyze`, { method: 'POST', body });
-  } catch {
-    throw new Error(`Cannot reach the analysis server at ${baseUrl}. Is the backend running?`);
+    response = await fetchImpl(`${baseUrl}/analyze`, { method: 'POST', body, headers, signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err;
+    throw new Error(`Cannot reach the analysis server at ${baseUrl}. Is the backend running?`, { cause: err });
   }
   if (!response.ok) throw new Error(await readErrorMessage(response));
   return response.json();
@@ -174,6 +180,25 @@ export function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Save a PDF from a same-origin blob: <a download> is ignored for cross-origin URLs (backend :8000
+// vs UI :5173), so the PDF would just open in a tab instead of downloading. Falls back to opening it.
+export async function savePdf(url, filename) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const objectUrl = URL.createObjectURL(await res.blob());
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch {
+    window.open(url, '_blank', 'noopener');
+  }
 }
 
 export const isTiffFile = (file) => Boolean(file && /\.tiff?$/i.test(file.name));

@@ -11,7 +11,13 @@ import numpy as np
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, status
+from dotenv import load_dotenv
+
+# Loads backend/.env (gitignored) into the process environment before anything below reads os.environ,
+# e.g. GOOGLE_CLIENT_ID, SMTP_*, AUTH_DB. A real env var set outside this file still wins (override=False).
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+from fastapi import FastAPI, File, Form, Header, HTTPException, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +36,7 @@ from geospatial_preprocessing.acquisition_date import extract_acquisition_date, 
 
 from agent_manager.agent_controller import get_agent, load_agent
 from report_retention import purge_old_reports, retention_hours
+from auth import router as auth_router, save_report_for_token
 from upload_validation import UploadTooLarge, detect_image_kind, max_request_bytes, max_upload_bytes, read_limited
 from agent_manager.schemas import ExecutionTrace, ImageInput, TaskType
 from agent_manager.prompts import DEFAULT_MAX_NEW_TOKENS, describe_first_enabled, history_for_model
@@ -92,6 +99,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
 
 os.makedirs("reports", exist_ok=True)
 app.mount("/reports", StaticFiles(directory="reports"), name="reports")
@@ -208,8 +217,9 @@ def analyze(
     adapter: str = Form("general", description="Explicit adapter to route to"),
     modality_a: str = Form("optical", description="Sensor type of image 1: optical | sar"),
     modality_b: str = Form("optical", description="Sensor type of image 2: optical | sar"), 
-    chat_history: Optional[str] = Form(None, description="Stringified JSON of the conversation"), 
+    chat_history: Optional[str] = Form(None, description="Stringified JSON of the conversation"),
     images: List[UploadFile] = File(default=[], description="Up to 2 images"),
+    authorization: Optional[str] = Header(default=None, description="Bearer token: if signed in, this run is added to the account's report history"),
 ):
     engine = _agent()  # 503 before doing any work if the model is not available
 
@@ -427,20 +437,15 @@ def analyze(
 
                 shape_a = img_a.shape[:2]
                 shape_b = img_b.shape[:2]
-                
-                # 1. Tolerance Check
-                if shape_a != shape_b:
-                    height_diff = abs(shape_a[0] - shape_b[0])
-                    width_diff = abs(shape_a[1] - shape_b[1])
-                    
-                    if height_diff > 10 or width_diff > 10:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"Major shape mismatch ({shape_a} vs {shape_b}). Standard images must be the same size."
-                        )
-                    print(f"Minor shape mismatch ({shape_a} vs {shape_b}). Proceeding to optical alignment...")
 
-                # 2. ORB Alignment
+                if shape_a != shape_b:
+                    print(f"Shape mismatch ({shape_a} vs {shape_b}). Proceeding to optical alignment...")
+
+                # ORB alignment already handles arbitrary size differences (it warps/resizes onto
+                # img_a's shape and validates scale/rotation/translation before trusting the warp,
+                # falling back to a plain resize with a warning otherwise), so there is no separate
+                # size gate here: a before/after pair legitimately differs in pixel size whenever one
+                # side is an upload and the other a map capture at a different viewport size.
                 try:
                     # align_standard_images automatically fixes the shape AND the sub-pixel camera shifts
                     img_b, valid_mask, align_note = align_with_status(img_a, img_b)
@@ -608,6 +613,11 @@ def analyze(
     }
     with open(os.path.join(session_folder, "data.json"), "w") as f:
         json.dump(record, f)
+
+    # Optional: if the caller is signed in, this run joins their account's report history (GET
+    # /auth/reports). Anonymous use is unaffected either way.
+    token = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
+    save_report_for_token(token, session_id, query, agent_trace.task.value)
 
     # Use the evidence image in the PDF when there is one, else fall back to the first upload
     evidence_path = os.path.join(session_folder, "evidence.png")

@@ -5,11 +5,15 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import SatQueryFrontend from './SatQueryFrontend';
 import Dashboard from './Dashboard';
 import About from './About'; 
+import { AuthProvider } from './auth/AuthContext';
+import RequireAuth from './auth/RequireAuth';
+import AuthPage from './auth/AuthPage';
 
 
 function App() {
   return (
     <Router>
+      <AuthProvider>
       <Routes>
         {/* When the URL is exactly "/", load the 3D Globe home page */}
         <Route path="/" element={<SatQueryFrontend />} />
@@ -17,8 +21,13 @@ function App() {
         {/* When the URL is "/about", load the glass slab About page */}
         <Route path="/about" element={<About />} />
 
-        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/login" element={<AuthPage key="login" mode="login" />} />
+        <Route path="/signup" element={<AuthPage key="signup" mode="signup" />} />
+
+        {/* The dashboard needs an account */}
+        <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
       </Routes>
+      </AuthProvider>
     </Router>
   );
 }

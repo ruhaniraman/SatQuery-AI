@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Bot, CircleAlert, ImageIcon, SendHorizontal, User } from 'lucide-react';
+import { Bot, CircleAlert, CircleStop, ImageIcon, SendHorizontal, User } from 'lucide-react';
 import { Button, EmptyState, FormattedAnswer, Notice, cx } from '../ui';
 
 const SUGGESTIONS = [
@@ -29,7 +29,7 @@ function Message({ msg }) {
 }
 
 export default function AssistantPanel({ ws, goTo }) {
-  const { chat, isExecuting, errorFor, dismissError, sendMessage, slots } = ws;
+  const { chat, isExecuting, errorFor, dismissError, sendMessage, stopAnalysis, slots } = ws;
   const error = errorFor('assistant');
   const [text, setText] = useState('');
   const endRef = useRef(null);
@@ -102,7 +102,14 @@ export default function AssistantPanel({ ws, goTo }) {
             placeholder={hasImage ? 'Ask about the imagery…' : 'Add an image to ask questions'}
             className="max-h-32 min-h-[2.75rem] flex-1 resize-none bg-transparent px-2 py-1 text-[13px] text-slate-100 placeholder:text-slate-500 focus:outline-none disabled:opacity-50"
           />
-          <Button type="submit" size="sm" icon={SendHorizontal} disabled={!canSend} aria-label="Send" className="h-9 w-9 !p-0" />
+          {isExecuting ? (
+            <Button
+              type="button" size="sm" variant="rose" icon={CircleStop} onClick={stopAnalysis}
+              title="Stop the running analysis" aria-label="Stop analysing" className="h-9 w-9 !p-0"
+            />
+          ) : (
+            <Button type="submit" size="sm" icon={SendHorizontal} disabled={!canSend} aria-label="Send" className="h-9 w-9 !p-0" />
+          )}
         </div>
       </form>
     </div>

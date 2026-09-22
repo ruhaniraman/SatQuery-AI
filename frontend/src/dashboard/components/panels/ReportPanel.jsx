@@ -3,8 +3,9 @@ import {
   ArrowRight, Check, Download, FileText, GitCompareArrows, Merge, MessageSquare, RotateCcw, ScanSearch, TriangleAlert,
 } from 'lucide-react';
 import { Button, Card, EmptyState, KeyValue, Label, Notice, PreviewImage, cx } from '../ui';
-import { evidenceUrl, formatTelemetryValue, humanizeIdentifier } from '../../utils/api';
+import { evidenceUrl, formatTelemetryValue, humanizeIdentifier, savePdf } from '../../utils/api';
 import { describeReportChoice, runTime } from '../../utils/runs';
+import AccountReports from '../AccountReports';
 
 const sentence = (value) => {
   const text = humanizeIdentifier(value).toLowerCase();
@@ -15,25 +16,6 @@ const KIND_ICON = { chat: MessageSquare, scan: ScanSearch, change: GitCompareArr
 
 // Telemetry that is printed in the PDF instead of in this table
 const HIDDEN_TELEMETRY = new Set(['comparison_details']);
-
-// Save the PDF from a same-origin blob: <a download> is ignored for cross-origin URLs (backend :8000
-// vs UI :5173), so the PDF would just open in a tab. Falls back to opening it.
-export async function savePdf(url, filename) {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const objectUrl = URL.createObjectURL(await res.blob());
-    const link = document.createElement('a');
-    link.href = objectUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-  } catch {
-    window.open(url, '_blank', 'noopener');
-  }
-}
 
 function RunRow({ run, chosen, onPick }) {
   const Icon = KIND_ICON[run.kind] || FileText;
@@ -66,9 +48,12 @@ export default function ReportPanel({ ws }) {
 
   if (!reportRun) {
     return (
-      <EmptyState icon={FileText} title="No report yet">
-        Run an analysis to see what was done, which model produced the answer, and download the PDF report.
-      </EmptyState>
+      <div className="space-y-3.5">
+        <EmptyState icon={FileText} title="No report yet">
+          Run an analysis to see what was done, which model produced the answer, and download the PDF report.
+        </EmptyState>
+        <AccountReports />
+      </div>
     );
   }
 
@@ -152,6 +137,8 @@ export default function ReportPanel({ ws }) {
           </Card>
         </div>
       )}
+
+      <AccountReports className="!mt-5" />
     </div>
   );
 }
