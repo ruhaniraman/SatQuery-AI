@@ -119,6 +119,18 @@ test('requestAnalysis explains an unreachable server instead of "Failed to fetch
   );
 });
 
+test('requestAnalysis passes the signal through and lets an abort pass through as-is (the Stop button)', async () => {
+  let seenSignal;
+  const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
+  const fetchImpl = async (url, init) => { seenSignal = init.signal; throw abort; };
+  const controller = new AbortController();
+  await assert.rejects(
+    requestAnalysis({ query: 'q', images: [{ file: file('a.png'), modality: 'optical' }], signal: controller.signal, fetchImpl, baseUrl: 'http://api.test' }),
+    (err) => err.name === 'AbortError',
+  );
+  assert.equal(seenSignal, controller.signal);
+});
+
 // ------------------------------------------------------------------ small helpers
 
 test('URL helpers tolerate results without evidence or report', () => {

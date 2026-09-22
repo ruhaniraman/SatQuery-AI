@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BACKEND_URL, DEFAULT_QUERIES, isTiffFile, reportFileName, requestAnalysis, requestPreview, requestReport,
 } from '../utils/api';
+import { readToken } from '../utils/auth';
 import { mapLink } from '../utils/scanResult';
 import {
   addRun, dropRunsFor, emptySlot, isAnnotated, latestRun, makeRun, pickReportRun,
@@ -116,8 +117,16 @@ export function useWorkspace() {
     });
   }, [slots, patchSlot, renderTiff]);
 
+  // The in-flight /analyze request, so the Stop button can give up on it. Only one run is ever active
+  // (execute() below refuses to start a second one), so a single ref is enough. Note this only stops the
+  // BROWSER from waiting: main_api.py's endpoints are sync/threadpool, so the backend's own GPU work for
+  // an already-started request keeps running to completion and still holds the model lock meanwhile.
+  const abortRef = useRef(null);
+  const stopAnalysis = useCallback(() => { abortRef.current?.abort(); }, []);
+
   // Runs one analysis and records it. `pair` marks two-image runs so their messages stay out of the
-  // single-image model context. Resolves to { data, run }, or null when it failed or one is running.
+  // single-image model context. Resolves to { data, run }, or null when it failed, was stopped, or one
+  // is already running.
   const execute = useCallback(async ({
     kind, title, query, adapter = 'general', images, history, userEntry, errorScope, pair = false, revealEvidence = true, meta = null,
   }) => {
@@ -128,8 +137,10 @@ export function useWorkspace() {
     setFocus(null);
     setIsExecuting(true);
     setBusy(kind === 'scan' ? `scan:${adapter}` : kind);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const data = await requestAnalysis({ query, adapter, images, history });
+      const data = await requestAnalysis({ query, adapter, images, history, token: readToken(), signal: controller.signal });
       const run = makeRun({ kind, title, data, adapter: kind === 'scan' ? adapter : null, meta });
       setRuns((prev) => addRun(prev, run));
       setChat((prev) => [...prev, { role: 'ai', content: data.answer, ...scope }]);
@@ -141,9 +152,11 @@ export function useWorkspace() {
       }
       return { data, run };
     } catch (err) {
-      setError({ message: err.message, scope: errorScope });
+      const message = err?.name === 'AbortError' ? 'Response was interrupted.' : err.message;
+      setError({ message, scope: errorScope });
       return null;
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setIsExecuting(false);
       setBusy(null);
     }
@@ -260,7 +273,7 @@ export function useWorkspace() {
     slots, latest, runs, reportRun, reportRunId, selectReportRun: setReportRunId, prepareReport,
     setImage, removeImage, setModality,
     viewMode, setViewMode, activeLayer, setActiveLayer, focus, focusArea,
-    chat, error, errorFor, isExecuting, busy,
+    chat, error, errorFor, isExecuting, busy, stopAnalysis,
     sendMessage, runScan, runChange, runFusion, analyzeView, dismissError: () => setError(null),
   };
 }

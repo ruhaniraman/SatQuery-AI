@@ -36,7 +36,7 @@ function makeWs(overrides = {}) {
     setImage() {}, removeImage() {}, setModality() {},
     viewMode: 'map', setViewMode() {}, activeLayer: 'a', setActiveLayer() {},
     chat: [], isExecuting: false, busy: null,
-    sendMessage() {}, runScan() {}, runChange() {}, runFusion() {}, analyzeView() {}, dismissError() {},
+    sendMessage() {}, runScan() {}, runChange() {}, runFusion() {}, analyzeView() {}, dismissError() {}, stopAnalysis() {},
   };
   const ws = { ...base, ...overrides };
   ws.errorFor = (scope) => (ws.error && ws.error.scope === scope ? ws.error.message : null);
@@ -168,8 +168,11 @@ test('NavRail lists every feature, marks the open one, groups them and shows sta
 
   const busy = html(h(NavRail, { features: FEATURES, activeId: 'imagery', panelOpen: true, onSelect() {}, ws: makeWs({ isExecuting: true, busy: 'scan:mining' }) }));
   assert.match(busy, /animate-spin/);
+  assert.match(busy, /aria-label="Working"/, 'the running feature\'s own icon is replaced by the spinner, not just badged');
   const busyChange = html(h(NavRail, { features: FEATURES, activeId: 'imagery', panelOpen: true, onSelect() {}, ws: makeWs({ isExecuting: true, busy: 'change' }) }));
   assert.match(busyChange, /animate-spin/);
+  // only the busy feature's icon becomes the spinner; a non-busy feature (Report) keeps its own icon
+  assert.equal((busy.match(/aria-label="Working"/g) || []).length, 1);
 });
 
 // ------------------------------------------------------------------ imagery
@@ -258,6 +261,11 @@ test('AssistantPanel: busy state, and only ITS errors are shown', async () => {
   const busy = html(h(AssistantPanel, { ws: makeWs({ ...single(), isExecuting: true }), goTo() {} }));
   assert.match(busy, /Analysing/);
   assert.match(busy, /<textarea[^>]*disabled/);
+  assert.match(busy, /aria-label="Stop analysing"/, 'the send button becomes a stop button while running');
+  assert.doesNotMatch(busy, /aria-label="Send"/);
+  const idle = html(h(AssistantPanel, { ws: makeWs(single()), goTo() {} }));
+  assert.match(idle, /aria-label="Send"/);
+  assert.doesNotMatch(idle, /aria-label="Stop analysing"/);
   const err = html(h(AssistantPanel, { ws: makeWs({ ...single(), error: { message: 'The AI model is not available: X', scope: 'assistant' } }), goTo() {} }));
   assert.match(err, /role="alert"/);
   assert.match(err, /The AI model is not available: X/);
@@ -477,13 +485,13 @@ test('FusionPanel: an Optical and a SAR input with fixed sensor types, disabled 
 
 test('ReportPanel: empty state', async () => {
   const ReportPanel = (await load('/src/dashboard/components/panels/ReportPanel.jsx')).default;
-  assert.match(html(h(ReportPanel, { ws: makeWs() })), /No report yet/);
+  assert.match(html(await signedIn(null, h(ReportPanel, { ws: makeWs() }))), /No report yet/);
 });
 
 test('ReportPanel renders a realistic trace, including objects, booleans and lists, without crashing', async () => {
   const ReportPanel = (await load('/src/dashboard/components/panels/ReportPanel.jsx')).default;
   const run = await runOf('change', { title: 'Change detection' });
-  const out = html(h(ReportPanel, { ws: makeWs({ runs: [run], reportRun: run }) }));
+  const out = html(await signedIn(null, h(ReportPanel, { ws: makeWs({ runs: [run], reportRun: run }) })));
   assert.match(out, /Change detection/);                                   // task, humanised
   assert.match(out, /2 images of the same sensor type/);
   assert.match(out, /Rule Based Router/);                                  // stages, humanised
@@ -503,7 +511,7 @@ test('ReportPanel shows which evidence the report uses and lets any run be picke
   const scan = await runOf('scan', { title: 'Mining scan', at: 1000 });
   const chat = await runOf('chat', { title: 'What is here?', at: 2000 });
   const runs = [chat, scan];                                                // newest first
-  const auto = html(h(ReportPanel, { ws: makeWs({ runs, reportRun: scan, reportRunId: null }) }));
+  const auto = html(await signedIn(null, h(ReportPanel, { ws: makeWs({ runs, reportRun: scan, reportRunId: null }) })));
   assert.match(auto, /Using the latest annotated evidence: “Mining scan”/);
   assert.match(auto, /Plain questions never replace it/);
   assert.match(auto, /src="http:\/\/localhost:8000\/reports\/abc\/evidence\.png"/);
@@ -514,7 +522,7 @@ test('ReportPanel shows which evidence the report uses and lets any run be picke
   assert.equal((auto.match(/aria-label="Used in the report"/g) || []).length, 1, 'exactly one run is marked as used');
   assert.doesNotMatch(auto, /Automatic/, 'no reset link while nothing was picked');
 
-  const picked = html(h(ReportPanel, { ws: makeWs({ runs, reportRun: chat, reportRunId: chat.id }) }));
+  const picked = html(await signedIn(null, h(ReportPanel, { ws: makeWs({ runs, reportRun: chat, reportRunId: chat.id }) })));
   assert.match(picked, /Using the evidence of “What is here\?”, as you chose\./);
   assert.match(picked, /Automatic/);
 });
@@ -622,11 +630,11 @@ test('ThemeToggle names the theme it switches to', async () => {
 test('CoordinateBox: a labelled input and Go, and a remove button only once there is a marker', async () => {
   const CoordinateBox = (await load('/src/dashboard/components/CoordinateBox.jsx')).default;
   const idle = html(h(CoordinateBox, { onGo() {}, onClear() {}, hasPin: false }));
-  assert.match(idle, /aria-label="Go to coordinates"/);
-  assert.match(idle, /placeholder="Lat, Lng/);
-  assert.match(idle, /aria-label="Go to these coordinates"/);
-  assert.doesNotMatch(idle, /aria-label="Remove the marker"/);
-  assert.match(html(h(CoordinateBox, { onGo() {}, onClear() {}, hasPin: true })), /aria-label="Remove the marker"/);
+  assert.match(idle, /aria-label="Search a place or coordinates"/);
+  assert.match(idle, /placeholder="Search a place or Lat, Lng"/);
+  assert.match(idle, /aria-label="Search"/);
+  assert.doesNotMatch(idle, /aria-label="Clear the search/);
+  assert.match(html(h(CoordinateBox, { onGo() {}, onClear() {}, hasPin: true })), /aria-label="Clear the search and remove the marker"/);
 });
 
 test('FormattedAnswer labels OBSERVATIONS / ASSESSMENT and copes with run-on model output', async () => {
@@ -847,8 +855,9 @@ test('the nav buttons fill the rail on desktop, so the icons sit at its centre',
 test('the header uses the new logo, sized for the nav column, with a larger title', async () => {
   const { MemoryRouter } = await import('react-router-dom');
   const Dashboard = (await load('/src/Dashboard.jsx')).default;
-  const out = html(h(MemoryRouter, null, h(Dashboard)));
-  assert.match(out, /<img src="[^"]*logo[^"]*\.jpeg"[^>]*class="[^"]*h-10 w-10/);
+  const { AuthProvider } = await load('/src/auth/AuthContext.jsx');
+  const out = html(h(MemoryRouter, null, h(AuthProvider, null, h(Dashboard))));
+  assert.match(out, /<span role="img" aria-hidden="true" class="sq-logo-mark h-10 w-10" style="--sq-logo:url\([^)]*logo-mark[^)]*\)"/);
   assert.match(out, /class="flex w-\[76px\] shrink-0 justify-center"/, 'the logo column is as wide as the nav rail');
   assert.match(out, /text-2xl font-bold[^>]*>SatQuery-AI</);
   assert.match(out, /aria-label="SatQuery-AI home"/);
@@ -860,7 +869,8 @@ test('the Dashboard renders as a whole: header, status, theme toggle and every n
   const { MemoryRouter } = await import('react-router-dom');
   const Dashboard = (await load('/src/Dashboard.jsx')).default;
   const { FEATURES } = await load('/src/dashboard/features.js');
-  const out = html(h(MemoryRouter, null, h(Dashboard)));
+  const { AuthProvider } = await load('/src/auth/AuthContext.jsx');
+  const out = html(h(MemoryRouter, null, h(AuthProvider, null, h(Dashboard))));
   assert.match(out, /SatQuery-AI/);
   assert.match(out, /data-theme="dark"/);
   assert.match(out, /aria-label="Switch to light theme"/);
@@ -868,4 +878,89 @@ test('the Dashboard renders as a whole: header, status, theme toggle and every n
   for (const f of FEATURES) assert.match(out, new RegExp(`>${f.label}<`));
   assert.match(out, /aria-label="Imagery"/, 'the open panel is labelled');
   assert.match(out, /aria-label="Viewer"/);
+});
+
+
+// ------------------------------------------------------------------ accounts, search, header layout
+
+const signedIn = async (user, element) => {
+  const { AuthContext } = await load('/src/auth/authState.js');
+  return h(AuthContext.Provider, { value: { status: user ? 'authed' : 'anon', user, signIn() {}, signOut() {}, recheck() {} } }, element);
+};
+
+test('UserMenu shows the person and a sign-out button, and nothing when signed out', async () => {
+  const UserMenu = (await load('/src/dashboard/components/UserMenu.jsx')).default;
+  const out = html(await signedIn({ name: 'Ada Lovelace', email: 'ada@example.com' }, h(UserMenu)));
+  assert.match(out, />Ada Lovelace</);
+  assert.match(out, />A</, 'the initial');
+  assert.match(out, /aria-label="Sign out"/);
+  assert.equal(html(await signedIn(null, h(UserMenu))), '');
+});
+
+test('AccountReports shows nothing when signed out, and its section when signed in', async () => {
+  const AccountReports = (await load('/src/dashboard/components/AccountReports.jsx')).default;
+  assert.equal(html(await signedIn(null, h(AccountReports))), '', 'no account, nothing to show');
+  assert.equal(html(h(AccountReports)), '', 'no <AuthProvider> at all (e.g. a standalone panel render) is just as safe');
+  const out = html(await signedIn({ name: 'Ada', email: 'ada@example.com' }, h(AccountReports)));
+  assert.match(out, /Your saved reports/);
+});
+
+test('the login and sign-up pages have the right fields, a Google slot and a link to each other', async () => {
+  const { MemoryRouter } = await import('react-router-dom');
+  const AuthPage = (await load('/src/auth/AuthPage.jsx')).default;
+  const login = html(await signedIn(null, h(MemoryRouter, null, h(AuthPage, { mode: 'login' }))));
+  assert.match(login, /Welcome back/);
+  assert.match(login, /autoComplete="current-password"|autocomplete="current-password"/);
+  assert.doesNotMatch(login, /Confirm password/);
+  assert.match(login, /href="\/signup"/);
+  assert.match(login, /Google sign-in is off/, 'no client id known yet: the setup note, not a broken button');
+  const signup = html(await signedIn(null, h(MemoryRouter, null, h(AuthPage, { mode: 'signup' }))));
+  assert.match(signup, /Create your account/);
+  assert.match(signup, /id="auth-name"/);
+  assert.match(signup, /Confirm password/);
+  assert.match(signup, /href="\/login"/);
+});
+
+// A redirect (<Navigate>) only fires in an effect, so static rendering shows the page it LEAVES: nothing, not the form.
+test('a signed-in visitor is not shown the login form', async () => {
+  const { MemoryRouter, Routes, Route } = await import('react-router-dom');
+  const AuthPage = (await load('/src/auth/AuthPage.jsx')).default;
+  const out = html(await signedIn({ name: 'A', email: 'a@b.co' }, h(MemoryRouter, { initialEntries: ['/login'] },
+    h(Routes, null, h(Route, { path: '/login', element: h(AuthPage) }), h(Route, { path: '/dashboard', element: h('p', null, 'DASHBOARD HERE') })))));
+  assert.doesNotMatch(out, /Welcome back/);
+  assert.doesNotMatch(out, /auth-password/);
+});
+
+test('RequireAuth shows the page to a signed-in person and never to anyone else', async () => {
+  const { MemoryRouter, Routes, Route } = await import('react-router-dom');
+  const RequireAuth = (await load('/src/auth/RequireAuth.jsx')).default;
+  const tree = () => h(MemoryRouter, { initialEntries: ['/dashboard'] }, h(Routes, null,
+    h(Route, { path: '/login', element: h('p', null, 'LOGIN PAGE') }),
+    h(Route, { path: '/dashboard', element: h(RequireAuth, null, h('p', null, 'SECRET')) })));
+  const okOut = html(await signedIn({ name: 'A', email: 'a@b.co' }, tree()));
+  assert.match(okOut, /SECRET/);
+  const anonOut = html(await signedIn(null, tree()));
+  assert.doesNotMatch(anonOut, /SECRET/);
+  const { AuthContext } = await load('/src/auth/authState.js');
+  for (const status of ['loading', 'offline']) {
+    const held = html(h(AuthContext.Provider, { value: { status, user: null, recheck() {} } }, tree()));
+    assert.doesNotMatch(held, /SECRET/, status);
+    assert.match(held, status === 'offline' ? /Cannot reach the server/ : /Checking your session/);
+  }
+});
+
+test('CoordinateBox shows a list of matching places and a search error', async () => {
+  const CoordinateBox = (await load('/src/dashboard/components/CoordinateBox.jsx')).default;
+  assert.doesNotMatch(html(h(CoordinateBox, { onGo() {}, onClear() {}, hasPin: false })), /Matching places/);
+});
+
+test('the viewer header holds a slot for the timeline between the Live map switch and the layer switch', async () => {
+  const Viewer = (await load('/src/dashboard/components/Viewer.jsx')).default;
+  const { featureById } = await load('/src/dashboard/features.js');
+  const out = html(h(Viewer, { ws: makeWs({ viewMode: 'map' }), feature: featureById('imagery'), onOpenFeature() {} }));
+  const live = out.indexOf('Live map');
+  const slot = out.indexOf('flex-1 basis-[22rem]');
+  assert.ok(live > -1 && slot > live, 'the timeline slot follows the Live map / Inputs switch');
+  const inputs = html(h(Viewer, { ws: makeWs({ viewMode: 'inputs' }), feature: featureById('fusion'), onOpenFeature() {} }));
+  assert.ok(inputs.indexOf('flex-1 basis-[22rem]') < inputs.indexOf('>Composite<'), 'and comes before the Optical / SAR / Composite switch');
 });
