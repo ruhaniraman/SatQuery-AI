@@ -8,7 +8,7 @@
    long as it sticks to these utilities. The few things that are not utilities (backdrop, Leaflet) use the
    --sq-* variables below. */
 .sq-root {
-  --sq-overlay: linear-gradient(to bottom, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.4) 45%, rgba(0, 0, 0, 0.75) 100%);
+  --sq-overlay: linear-gradient(to bottom, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.22) 45%, rgba(0, 0, 0, 0.58) 100%);
   --sq-map-bg: #070b14;
   --sq-ctl-bg: rgba(0, 0, 0, 0.62);
   --sq-ctl-bg-hover: rgba(30, 41, 59, 0.85);
@@ -17,25 +17,39 @@
   --sq-ctl-divider: rgba(255, 255, 255, 0.12);
   --sq-attr-bg: rgba(0, 0, 0, 0.55);
   --sq-attr-fg: #94a3b8;
-  --sq-attr-link: #93c5fd;
+  --sq-attr-link: #5eead4;
   --sq-scroll: rgba(148, 163, 184, 0.35);
   --sq-scroll-hover: rgba(148, 163, 184, 0.5);
+
+  /* Deep teal accent, replacing the original default blue. Every bg-blue, text-blue, border-blue and
+     ring-blue utility in the app reads these Tailwind v4 CSS variables, so overriding them here reskins
+     the whole accent without touching component files. */
+  --color-blue-100: #ccfbf1;
+  --color-blue-200: #99f6e4;
+  --color-blue-300: #5eead4;
+  --color-blue-400: #2dd4bf;
+  --color-blue-500: #14b8a6;
+  --color-blue-600: #0d9488;
+  --color-blue-700: #0f766e;
+  --color-blue-800: #115e59;
+  --color-blue-950: #042f2e;
 }
 .sq-root[data-theme='dark'] { color-scheme: dark; }
 
-/* The logo is a mask: the drawing takes the colour below and the header shows through everywhere else
-   (white on the dark header, black on the light one). */
+/* The logo is a mask: the drawing takes the colour below and the header shows through everywhere else.
+   Tinted with the accent teal (the same shade as --color-blue-400 in each theme) instead of plain
+   white/black. */
 .sq-logo-mark {
   display: block;
-  background-color: #ffffff;
+  background-color: #2dd4bf;
   -webkit-mask: var(--sq-logo) center / contain no-repeat;
   mask: var(--sq-logo) center / contain no-repeat;
 }
-.sq-root[data-theme='light'] .sq-logo-mark { background-color: #000000; }
+.sq-root[data-theme='light'] .sq-logo-mark { background-color: #0d9488; }
 
 .sq-root[data-theme='light'] {
   color-scheme: light;
-  --sq-overlay: linear-gradient(to bottom, rgba(248, 250, 252, 0.9) 0%, rgba(241, 245, 249, 0.78) 45%, rgba(248, 250, 252, 0.92) 100%);
+  --sq-overlay: linear-gradient(to bottom, rgba(248, 250, 252, 0.78) 0%, rgba(241, 245, 249, 0.6) 45%, rgba(248, 250, 252, 0.8) 100%);
   --sq-map-bg: #e2e8f0;
   --sq-ctl-bg: rgba(255, 255, 255, 0.86);
   --sq-ctl-bg-hover: rgba(226, 232, 240, 0.95);
@@ -44,7 +58,7 @@
   --sq-ctl-divider: rgba(15, 23, 42, 0.12);
   --sq-attr-bg: rgba(255, 255, 255, 0.75);
   --sq-attr-fg: #475569;
-  --sq-attr-link: #1d4ed8;
+  --sq-attr-link: #0f766e;
   --sq-scroll: rgba(71, 85, 105, 0.4);
   --sq-scroll-hover: rgba(71, 85, 105, 0.6);
 
@@ -62,14 +76,14 @@
   --color-slate-700: #cbd5e1;
   --color-slate-800: #e2e8f0;
   --color-slate-950: #ffffff;          /* text on the solid blue primary buttons */
-  /* accents */
-  --color-blue-50: #0f172a;
-  --color-blue-100: #1e3a8a;
-  --color-blue-200: #1e40af;
-  --color-blue-300: #1d4ed8;
-  --color-blue-400: #2563eb;
-  --color-blue-700: #60a5fa;
-  --color-blue-950: #bfdbfe;
+  /* accents: deep teal, see the base .sq-root block */
+  --color-blue-50: #042f2e;
+  --color-blue-100: #134e4a;
+  --color-blue-200: #115e59;
+  --color-blue-300: #0f766e;
+  --color-blue-400: #0d9488;
+  --color-blue-700: #2dd4bf;
+  --color-blue-950: #99f6e4;
   --color-amber-100: #78350f;
   --color-amber-300: #b45309;
   --color-amber-700: #f59e0b;

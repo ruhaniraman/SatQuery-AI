@@ -229,7 +229,7 @@ test('AssistantPanel: guides the user to add imagery first', async () => {
 test('AssistantPanel: suggestions when ready, and every message role renders', async () => {
   const AssistantPanel = (await load('/src/dashboard/components/panels/AssistantPanel.jsx')).default;
   const ready = html(h(AssistantPanel, { ws: makeWs(single()), goTo() {} }));
-  assert.match(ready, /Ask about your imagery/);
+  assert.match(ready, /Hi! I&#x27;m the SatQuery-AI assistant/, 'the greeting shows before any real conversation');
   assert.match(ready, /What land cover is visible\?/);
 
   const chat = [
@@ -241,7 +241,8 @@ test('AssistantPanel: suggestions when ready, and every message role renders', a
   assert.match(out, /Initiating mining scan/);
   assert.match(out, /Found 2 potential region/);
   assert.match(out, /and the north side\?/);
-  assert.doesNotMatch(out, /Ask about your imagery/, 'suggestions disappear once there is a conversation');
+  assert.doesNotMatch(out, /Hi! I&#x27;m the SatQuery-AI assistant/, 'the greeting disappears once there is a real conversation');
+  assert.doesNotMatch(out, /What land cover is visible\?/, 'suggestions disappear once there is a conversation');
 });
 
 test('AssistantPanel keeps two-image results out of the chat (they have their own panels)', async () => {
