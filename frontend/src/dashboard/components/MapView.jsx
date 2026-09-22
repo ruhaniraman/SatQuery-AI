@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CircleMarker, ImageOverlay, MapContainer, Pane, ScaleControl, TileLayer, Tooltip, ZoomControl, useMap, useMapEvents } from 'react-leaflet';
 import { Settings2, Tag } from 'lucide-react';
@@ -35,12 +36,14 @@ function CursorTracker({ onMove }) {
   return null;
 }
 
-// Flies to a typed coordinate. Zooms in to at least street-block level, but never zooms OUT from where
-// the user already is.
+// Flies to a searched place or typed coordinate. A place with a bounding box (a city, a region) is framed by it;
+// a bare point zooms in to at least street-block level, but never zooms OUT from where the user already is.
 function FlyToPin({ pin }) {
   const map = useMap();
   useEffect(() => {
-    if (pin) map.flyTo([pin.lat, pin.lng], Math.max(map.getZoom(), 13), { duration: 1.2 });
+    if (!pin) return;
+    if (pin.bounds) map.flyToBounds(pin.bounds, { duration: 1.2, maxZoom: 16 });
+    else map.flyTo([pin.lat, pin.lng], Math.max(map.getZoom(), 13), { duration: 1.2 });
   }, [map, pin]);
   return null;
 }
@@ -51,7 +54,7 @@ const DATE_SETTLE_MS = 350;
 
 // The live satellite map. It stays mounted while hidden so the user's position and zoom survive a
 // trip to the inputs view. The ask bar on top of it captures what is on screen and analyses it.
-export default function MapView({ active, ws, onOpenFeature }) {
+export default function MapView({ active, ws, onOpenFeature, layerSlot = null, timelineSlot = null }) {
   const [labels, setLabels] = useState(true);
   const [layer, setLayer] = useState('optical');       // 'optical' | 'sar' | 'past'
   const [pin, setPin] = useState(null);                // a typed coordinate, { lat, lng }
@@ -185,7 +188,7 @@ export default function MapView({ active, ws, onOpenFeature }) {
           </Pane>
           {pin && (
             <CircleMarker center={[pin.lat, pin.lng]} radius={9} pathOptions={{ color: '#3b82f6', weight: 3, fillColor: '#60a5fa', fillOpacity: 0.3 }}>
-              <Tooltip permanent direction="top" offset={[0, -8]}>{formatLatLng(pin)}</Tooltip>
+              <Tooltip permanent direction="top" offset={[0, -8]}>{pin.label ? `${pin.label} · ${formatLatLng(pin)}` : formatLatLng(pin)}</Tooltip>
             </CircleMarker>
           )}
           <ZoomControl position="bottomright" />
@@ -197,7 +200,6 @@ export default function MapView({ active, ws, onOpenFeature }) {
       </div>
 
       <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
-        <Segmented label="Imagery type" size="sm" value={layer} onChange={chooseLayer} options={layerOptions} className="pointer-events-auto !bg-black/60 backdrop-blur-md" />
         {sarSource || config.hasSar ? (
           <button type="button" onClick={() => setSarDialog(true)} aria-label="SAR provider settings" title="SAR provider settings"
             className="pointer-events-auto inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border border-white/15 bg-black/60 text-slate-300 backdrop-blur-md transition hover:bg-black/70 hover:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70">
@@ -218,15 +220,21 @@ export default function MapView({ active, ws, onOpenFeature }) {
         </button>
       </div>
 
+      {active && layerSlot && createPortal(
+        <Segmented label="Imagery type" size="sm" value={layer} onChange={chooseLayer} options={layerOptions} />,
+        layerSlot,
+      )}
+
       {sarDialog && <SarDialog source={sarSource} onSave={connectSar} onDisconnect={disconnectSar} onClose={() => setSarDialog(false)} />}
 
-      {layer === 'past' && !sarDialog && (
+      {active && timelineSlot && layer === 'past' && !sarDialog && createPortal(
         <Timeline
           status={past.status} error={past.error} releases={past.releases} index={dateIndex}
           ready={Boolean(release) && appliedIndex === dateIndex} busy={capturing} note={captureNote}
           before={ws.slots.before} after={ws.slots.after}
           onIndex={chooseDate} onRetry={loadPast} onUse={useAs} onOpenChange={() => onOpenFeature?.('change')}
-        />
+        />,
+        timelineSlot,
       )}
 
       {/* The pointer's coordinates live under the coordinate box, top right: the bottom of the map belongs to the

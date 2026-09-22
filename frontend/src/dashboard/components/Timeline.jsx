@@ -18,11 +18,12 @@ function Chip({ label, meta }) {
   );
 }
 
-// A date slider over the imagery archive. The map shows the chosen date; "Use as Before / After" captures what is
+// A date slider over the imagery archive. It is drawn into the viewer header, between the Live map / Inputs
+// switch and the imagery-type switch (MapView portals it there). The map shows the chosen date; "Use as Before / After" captures what is
 // on screen into Change detection, remembering the date and the area so a mismatch can be flagged. Keep the
 // map still between the two captures: both must show the same ground.
 export default function Timeline({ status, error, releases, index, ready, busy, note, before, after, onIndex, onRetry, onUse, onOpenChange }) {
-  const shell = 'pointer-events-auto absolute left-3 top-[3.25rem] z-10 w-[min(27rem,calc(100%-23rem))] rounded-xl border border-white/15 bg-black/70 p-3 backdrop-blur-md';
+  const shell = 'w-full min-w-0 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5';
 
   if (status === 'loading' || status === 'idle') {
     return <div className={cx(shell, 'flex items-center gap-2 text-xs text-slate-300')}><Loader2 size={14} className="animate-spin text-blue-400" /> Loading available dates…</div>;
@@ -44,8 +45,8 @@ export default function Timeline({ status, error, releases, index, ready, busy, 
   const step = (delta) => onIndex(Math.min(last, Math.max(0, index + delta)));
 
   return (
-    <div className={cx(shell, 'space-y-2.5')}>
-      <div className="flex items-center justify-between gap-2">
+    <div className={cx(shell, 'space-y-1.5')}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Imagery date</span>
           <span title={NOTE} className="cursor-help text-slate-500" aria-label={NOTE} role="img"><Info size={13} /></span>
@@ -57,9 +58,8 @@ export default function Timeline({ status, error, releases, index, ready, busy, 
           <button type="button" onClick={() => step(1)} disabled={index >= last || busy} aria-label="Later version"
             className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-slate-300 transition enabled:hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70"><ChevronRight size={15} /></button>
         </div>
-      </div>
 
-      <div>
+        <div className="min-w-[10rem] flex-1">
         <input
           type="range" min={0} max={last} step={1} value={index}
           onChange={(e) => onIndex(Number(e.target.value))}
@@ -72,13 +72,14 @@ export default function Timeline({ status, error, releases, index, ready, busy, 
             <span key={tick.index} className="absolute -translate-x-1/2" style={{ left: `${last ? (tick.index / last) * 100 : 0}%` }}>{tick.year}</span>
           ))}
         </div>
-      </div>
+        </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
         <Button size="sm" variant="subtle" disabled={!ready || busy} onClick={() => onUse('before')}>Use as Before</Button>
         <Button size="sm" variant="subtle" disabled={!ready || busy} onClick={() => onUse('after')}>Use as After</Button>
         {!ready && <span className="inline-flex items-center gap-1 text-[11px] text-slate-400"><Loader2 size={11} className="animate-spin" /> Loading</span>}
         {busy && <span className="inline-flex items-center gap-1 text-[11px] text-slate-400"><Loader2 size={11} className="animate-spin" /> Capturing</span>}
+        </div>
       </div>
 
       {note && <p role="alert" className="text-[11px] leading-snug text-red-300">{note}</p>}
