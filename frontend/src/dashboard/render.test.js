@@ -245,6 +245,23 @@ test('AssistantPanel: suggestions when ready, and every message role renders', a
   assert.doesNotMatch(out, /What land cover is visible\?/, 'suggestions disappear once there is a conversation');
 });
 
+test('AssistantPanel shows the confidence under an answer that has one, and nothing for one without', async () => {
+  const AssistantPanel = (await load('/src/dashboard/components/panels/AssistantPanel.jsx')).default;
+  const { confidenceInfo } = await load('/src/dashboard/utils/confidence.js');
+  const trace = (telemetry) => ({ agent_execution_trace: { telemetry } });
+  const chat = [
+    { role: 'user', content: 'Is there a water body?' },
+    { role: 'ai', content: 'Answer: Yes\n\nA river crosses the lower half.', confidence: confidenceInfo(trace({ confidence: 0.93, short_answer: 'Yes' })) },
+    { role: 'user', content: 'Describe the scene.' },
+    { role: 'ai', content: 'Fields and a village.', confidence: null },
+  ];
+  const out = html(h(AssistantPanel, { ws: makeWs({ ...single(), chat }), goTo() {} }));
+  assert.match(out, /Confidence <span[^>]*>93%<\/span>/);
+  assert.match(out, /High/);
+  assert.match(out, /remote-sensing VQA adapter/);
+  assert.equal(out.match(/Confidence <span/g).length, 1, 'only the answer that has a confidence gets the badge');
+});
+
 test('AssistantPanel keeps two-image results out of the chat (they have their own panels)', async () => {
   const AssistantPanel = (await load('/src/dashboard/components/panels/AssistantPanel.jsx')).default;
   const chat = [

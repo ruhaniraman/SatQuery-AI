@@ -50,6 +50,24 @@ def test_general_single_image_trace_is_honest(client):
     tel = tr["telemetry"]
     assert tel["active_adapter"] is None and "adapters disabled" in tel["model_used"]
     assert tel["inference"].startswith("free-text generation") and tel["max_new_tokens"] >= 512
+    # A real, computed generation signal - explicitly NOT claimed to be a correctness probability
+    assert tel["confidence"] == 0.87
+    assert "NOT a calibrated correctness score" in tel["confidence_method"]
+
+
+def test_confidence_is_just_omitted_when_it_could_not_be_computed(client):
+    # A real deployment can fail to compute this (see agent_controller.py's own try/except around it);
+    # the trace must stay honest rather than inventing a placeholder number.
+    client.agent.query_confidence = None
+    tel = trace_of(one_image(client))["telemetry"]
+    assert "confidence" not in tel and "confidence_method" not in tel
+
+
+def test_a_scan_never_claims_the_generation_confidence_field(client):
+    # Scans have their own, different confidence signal (per-finding, from the P(yes) grid - see
+    # scan_report.py); the generation-token-probability field only applies to the free-text general path.
+    tel = trace_of(one_image(client, adapter="mining"))["telemetry"]
+    assert "confidence" not in tel
 
 
 def test_grid_scan_trace_names_the_adapter_and_its_scoring(client):

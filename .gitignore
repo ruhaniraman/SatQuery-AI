@@ -236,3 +236,9 @@ temp_aligned_*
 CLAUDE.md
 # Local accounts database (backend/auth.py)
 backend/data/
+backend/eval_results/
+# Team documents (project brief, charts) and the demo script: local only
+docs/
+script.txt
+# VQA LoRA training checkpoints (1.7 GB); only the final adapter is committed
+backend/models/adapters/vqa/checkpoint-*/

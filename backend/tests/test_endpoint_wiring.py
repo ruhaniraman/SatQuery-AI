@@ -26,9 +26,12 @@ class FakeAgent:
         self.lock = threading.Lock()
         self.calls = []
 
+    # (answer, confidence) - a fixed, plausible mean-token-probability a test can override
+    query_confidence = 0.87
+
     def query(self, **kw):
         self.calls.append(kw)
-        return "A plain answer."
+        return "A plain answer.", self.query_confidence
 
     # P(yes) grid a feature scan gets back; a test can replace it
     scan_grid = np.array([[0.9, 0.2, 0.1, 0.1], [0.9, 0.2, 0.1, 0.1], [0.3, 0.2, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1]])

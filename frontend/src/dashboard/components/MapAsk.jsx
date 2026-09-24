@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ArrowRight, ChevronDown, CircleAlert, Eye, EyeOff, ImageDown, MessageSquare, SendHorizontal, X } from 'lucide-react';
 import { Button, FormattedAnswer, Notice, cx } from './ui';
 import ScanResult from './ScanResult';
+import ConfidenceBadge from './ConfidenceBadge';
+import { confidenceInfo } from '../utils/confidence';
 import { mapLink } from '../utils/scanResult';
 import { SCANS } from './panels/ScansPanel';
 import { evidenceUrl } from '../utils/api';
@@ -73,7 +75,7 @@ export default function MapAsk({ ws, layer = 'optical', layerLabel = null, captu
       setFailed(true);
       return;
     }
-    setCard({ title: sar ? `${title} (SAR view)` : title, answer: data.answer, scan: data.scan || null, link: mapLink({ bounds: shot.bounds }) });
+    setCard({ title: sar ? `${title} (SAR view)` : title, answer: data.answer, confidence: confidenceInfo(data), scan: data.scan || null, link: mapLink({ bounds: shot.bounds }) });
     if (adapter !== 'general' && data.visual_evidence_url) {
       onOverlay({ url: evidenceUrl(data), bounds: shot.bounds });
     }
@@ -125,7 +127,7 @@ export default function MapAsk({ ws, layer = 'optical', layerLabel = null, captu
               <div className="max-h-48 overflow-y-auto pr-1 sq-scroll">
                 {card.scan
                   ? <ScanResult scan={card.scan} link={card.link} compact />
-                  : <FormattedAnswer text={card.answer} className="text-[13px] leading-relaxed text-slate-100" />}
+                  : <><FormattedAnswer text={card.answer} className="text-[13px] leading-relaxed text-slate-100" /><ConfidenceBadge info={card.confidence} /></>}
               </div>
               <div className="flex flex-wrap gap-2">
                 {card.open

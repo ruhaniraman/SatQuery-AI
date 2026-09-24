@@ -41,6 +41,9 @@ from upload_validation import UploadTooLarge, detect_image_kind, max_request_byt
 from agent_manager.schemas import ExecutionTrace, ImageInput, TaskType
 from agent_manager.prompts import DEFAULT_MAX_NEW_TOKENS, describe_first_enabled, history_for_model
 from agent_manager.scene_stats import compute_scene_stats, format_scene_stats
+from agent_manager.clarification import needs_clarification
+from agent_manager.closed_questions import closed_question_space, display_answer
+from evaluation.answer_space import benchmark_prompt
 from agent_manager.scan_compare import summarize_scan_change
 from change_detection.change_report import compare_report_enabled, lora_compare_enabled
 from agent_manager.grid_scan import DEFAULT_CONTEXT, SCAN_YES_THRESHOLD
@@ -116,6 +119,7 @@ PREVIEW_MAX_SIDE = 2048
 _SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 
+
 def strip_markdown_asterisks(text):
     """The UI shows plain text, so emphasis markers are removed ONCE, here, before the answer is
     returned, stored in the chat history, or printed in the PDF (previously only the browser stripped
@@ -135,6 +139,10 @@ def _agent():
     return engine
 
 
+# The VQA LoRA trained by training/train_vqa_lora.py; used only if the engine loaded it (models/adapters/vqa).
+VQA_ADAPTER = "vqa"
+
+
 def _model_telemetry(adapter):
     """Which weights really produce the output. adapter=None means the base model with LoRA adapters
     switched off (which is how the general, change-detection and fusion paths all run)."""
@@ -146,7 +154,8 @@ def _model_telemetry(adapter):
         "model_used": f"{base} + LoRA adapter '{adapter}'",
         "active_adapter": adapter,
         "adapter_details": getattr(engine, "adapter_info", {}).get(adapter, {}),
-        "adapter_training_data": "not recorded in the adapter files",
+        "adapter_training_data": getattr(engine, "adapter_info", {}).get(adapter, {}).get(
+            "training_data", "not recorded in the adapter files"),
     }
 
 
@@ -364,9 +373,29 @@ def analyze(
 
             scene_stats = compute_scene_stats(img_array, modality_a) if adapter == "general" else None
             scene_facts = format_scene_stats(scene_stats)
-            if adapter == "general":
-                ai_answer = engine.query(prompt=query, image_path=single_img_path, explicit_adapter=adapter, modality=modality_a,
-                                        chat_history=parsed_history, scene_facts=scene_facts)
+            clarification = needs_clarification(query, parsed_history) if adapter == "general" else None
+            vqa_confidence = None
+            short_answer = None
+            if clarification:
+                ai_answer = clarification
+            elif adapter == "general":
+                # Yes/no, count and rural/urban questions: the remote-sensing VQA adapter gives the short answer
+                # (optical only - it was trained on Sentinel-2 RGB), then the general path explains it.
+                closed = (closed_question_space(query)
+                          if modality_a == "optical" and VQA_ADAPTER in getattr(engine, "adapter_info", {}) else None)
+                if closed is not None:
+                    reply, short_confidence = engine.short_answer(
+                        [Image.fromarray(img_array)], benchmark_prompt(query, closed), adapter=VQA_ADAPTER)
+                    short_answer = display_answer(closed, reply)
+                    if short_answer:
+                        vqa_confidence = short_confidence
+                explanation, text_confidence = engine.query(
+                    prompt=query, image_path=single_img_path, explicit_adapter=adapter, modality=modality_a,
+                    chat_history=parsed_history, scene_facts=scene_facts, answer_hint=short_answer or "")
+                if short_answer:
+                    ai_answer = f"Answer: {short_answer}\n\n{explanation}"
+                else:
+                    ai_answer, vqa_confidence = explanation, text_confidence
             else:
                 # Feature scan: score the 16 tiles, then say what was found and draw it (tint + outlines + pins)
                 probs = engine.scan_scores(img_array, adapter, prompt=query)
@@ -377,28 +406,53 @@ def analyze(
                 cv2.imwrite(evidence_img_path, cv2.cvtColor(annotated_img, cv2.COLOR_RGB2BGR))
 
             is_grid_scan = adapter != "general"
-            telemetry = {
-                **_model_telemetry(adapter if is_grid_scan else None),
-                "sensor_type": modality_a,
-            }
-            if is_grid_scan:
-                telemetry["inference"] = "4x4 tile yes/no scan, scored from first-token logits"
-                telemetry["grid_yes_threshold"] = SCAN_YES_THRESHOLD
-                telemetry["grid_tile_context"] = DEFAULT_CONTEXT
+            if clarification:
+                # No forward pass happened, so no model was "used" - claiming one would be exactly the
+                # kind of dishonest telemetry this trace is meant to rule out.
+                telemetry = {
+                    "model_used": None, "active_adapter": None, "sensor_type": modality_a,
+                    "inference": "none: the opening question was too vague to send to the model",
+                }
+                stages = ["RuleBasedRouter", "InputPreprocessor", "ClarificationGate"]
+                print(f"[{session_id}] Asked for clarification instead of guessing (query: {query!r})")
             else:
-                telemetry["inference"] = (
-                    "free-text generation after a describe-first pass (whole image + 4 quadrants)"
-                    if describe_first_enabled() else "free-text generation"
-                )
-                telemetry["measured_scene_facts"] = scene_facts or "unavailable"
-                telemetry["max_new_tokens"] = DEFAULT_MAX_NEW_TOKENS
-                telemetry["chat_turns_given_to_model"] = len(history_for_model(parsed_history, query))
-            agent_trace = _make_trace(
-                session_id, task, routing_reason,
-                ["RuleBasedRouter", "InputPreprocessor", "SingleImageSpecialist"],
-                telemetry,
-            )
-            print(f"[{session_id}] Executed {telemetry['model_used']}")
+                telemetry = {
+                    **_model_telemetry(adapter if is_grid_scan else None),
+                    "sensor_type": modality_a,
+                }
+                if is_grid_scan:
+                    telemetry["inference"] = "4x4 tile yes/no scan, scored from first-token logits"
+                    telemetry["grid_yes_threshold"] = SCAN_YES_THRESHOLD
+                    telemetry["grid_tile_context"] = DEFAULT_CONTEXT
+                else:
+                    telemetry["inference"] = (
+                        "free-text generation after a describe-first pass (whole image + 4 quadrants)"
+                        if describe_first_enabled() else "free-text generation"
+                    )
+                    telemetry["measured_scene_facts"] = scene_facts or "unavailable"
+                    telemetry["max_new_tokens"] = DEFAULT_MAX_NEW_TOKENS
+                    telemetry["chat_turns_given_to_model"] = len(history_for_model(parsed_history, query))
+                    if short_answer:
+                        adapted = _model_telemetry(VQA_ADAPTER)
+                        telemetry.update(
+                            model_used=f"{adapted['model_used']} for the short answer; base weights for the explanation",
+                            active_adapter=VQA_ADAPTER,
+                            adapter_details=adapted["adapter_details"],
+                            adapter_training_data=adapted["adapter_training_data"],
+                            short_answer=short_answer,
+                        )
+                        telemetry["inference"] = "short answer from the VQA adapter, then " + telemetry["inference"]
+                    if vqa_confidence is not None:
+                        telemetry["confidence"] = round(vqa_confidence, 3)
+                        telemetry["confidence_method"] = (
+                            "probability the remote-sensing VQA adapter gave its short answer (mean over its tokens)"
+                            if short_answer else
+                            "mean generation-token probability: how sure the model was of its own wording"
+                        ) + ", NOT a calibrated correctness score - a wrong answer can still score high"
+                stages = ["RuleBasedRouter", "InputPreprocessor"] + (["AdaptedVQASpecialist"] if short_answer else []) + [
+                    "SingleImageSpecialist"]
+                print(f"[{session_id}] Executed {telemetry['model_used']}")
+            agent_trace = _make_trace(session_id, task, routing_reason, stages, telemetry)
             
         elif task == TaskType.CHANGE_DETECTION:
             print("Routing to CDVQA Specialist via Agent Manager...")

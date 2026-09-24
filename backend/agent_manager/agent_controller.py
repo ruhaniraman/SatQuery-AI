@@ -26,6 +26,28 @@ from agent_manager.prompts import (
 # ~1280 tokens). Without it a large GeoTIFF or the stitched before|after image can OOM a small
 # GPU; the processor downsizes anything bigger. A starting guess, not a tuned value.
 # Env SATQUERY_MAX_PIXELS raises it (more detail on big scenes, more VRAM and latency).
+def _mean_token_probability(scores, generated_ids):
+    """Mean softmax probability the model assigned to the token it actually generated, at each
+    generation step. A real, computed signal - not invented - but explicitly NOT a calibrated
+    "this answer is correct" probability: a model can be fluently, confidently wrong, and this only
+    measures how sure the model was of its own wording, token by token. `scores` is
+    `generate(..., output_logits=True)`'s per-step RAW logits tuple (NOT output_scores: those come after the
+    logits processors and warpers, and Qwen2-VL's generation config samples with top_k=1, which leaves
+    every chosen token at probability 1.0 - a real run reported confidence 1.0 for a 200-word answer); `generated_ids` is the generated
+    portion of the sequence (prompt stripped). Returns None if there is nothing to measure."""
+    if not scores or generated_ids is None or len(generated_ids) == 0:
+        return None
+    steps = min(len(scores), len(generated_ids))
+    if steps == 0:
+        return None
+    total = 0.0
+    for i in range(steps):
+        token_id = generated_ids[i].item()
+        step_probs = torch.softmax(scores[i][0].float(), dim=-1)
+        total += step_probs[token_id].item()
+    return total / steps
+
+
 MAX_PIXELS = int(os.environ.get("SATQUERY_MAX_PIXELS", 1280 * 28 * 28))
 # Small images are upscaled to at least this many pixels (~256 visual tokens) so a thumbnail is
 # not seen at a handful of patches.
@@ -37,6 +59,10 @@ ADAPTER_QUESTIONS = {
     "deforestation": " Is there visible deforestation, active logging, or clear-cut land in this image? Answer ONLY 'yes' or 'no'.",
     "agriculture": " Are there distinct, green agricultural fields or cultivated crop rows in this image? Answer ONLY 'yes' or 'no'.",
 }
+
+
+# Adapters the engine attaches when their folder exists under models/adapters (not needed to start).
+OPTIONAL_ADAPTERS = ("vqa",)
 
 
 class SatQueryEngine:
@@ -82,10 +108,19 @@ class SatQueryEngine:
         self.model.load_adapter(mine_path, adapter_name="mining")
         print("All domain LoRAs attached successfully!")
 
+        # Optional adapters (e.g. the VQA LoRA from training/train_vqa_lora.py): loaded only if present.
+        self.loaded_adapters = ["agriculture", "deforestation", "mining"]
+        for name in OPTIONAL_ADAPTERS:
+            path = os.path.join(adapters_base_dir, name)
+            if os.path.exists(os.path.join(path, "adapter_config.json")):
+                self.model.load_adapter(path, adapter_name=name)
+                self.loaded_adapters.append(name)
+                print(f"Optional adapter '{name}' attached.")
+
         # Facts about each adapter, read from the files that were actually loaded (for the audit trace).
         # The adapter files do not record what data they were trained on, so nothing is claimed.
         self.adapter_info = {}
-        for name in ("agriculture", "deforestation", "mining"):
+        for name in self.loaded_adapters:
             try:
                 with open(os.path.join(adapters_base_dir, name, "adapter_config.json"), encoding="utf-8") as f:
                     cfg = json.load(f)
@@ -94,6 +129,16 @@ class SatQueryEngine:
                     "lora_rank": cfg.get("r"),
                     "lora_alpha": cfg.get("lora_alpha"),
                 }
+                # training_info.json: written by training/train_vqa_lora.py, or by hand for adapters trained
+                # elsewhere (the scan adapters: a "description" of the data, from the person who trained them).
+                info_path = os.path.join(adapters_base_dir, name, "training_info.json")
+                if os.path.exists(info_path):
+                    with open(info_path, encoding="utf-8") as f:
+                        trained = json.load(f).get("trained_on", {})
+                    self.adapter_info[name]["training_data"] = trained.get("description") or (
+                        f"{trained.get('benchmark', '?').upper()} {trained.get('split', '?')} split: "
+                        f"{trained.get('questions', '?')} questions on {trained.get('images', '?')} images"
+                    )
             except Exception:
                 self.adapter_info[name] = {}
 
@@ -189,12 +234,48 @@ class SatQueryEngine:
         )
         return format_scene_description(overview, dict(zip(QUADRANT_NAMES, captions)))
 
-    def query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None, scene_facts: str = "") -> str:
-        """Thread-safe entry point: only one request may switch adapters and generate at a time."""
+    def short_answer(self, images, prompt: str, adapter: str = None, max_new_tokens: int = 16):
+        """Closed-form answering for benchmark questions (evaluation/): one user turn with the image(s)
+        then the prompt, greedy decoding, no describe-first pass and no chat history. `images` is a list
+        of PIL images (a before/after pair is two). adapter None = base weights (adapters disabled), or the
+        name of a loaded LoRA. Returns (text, confidence), confidence as in query()."""
+        if adapter is not None and adapter not in self.adapter_info:
+            raise ValueError(f"Unknown adapter {adapter!r}; loaded: {sorted(self.adapter_info)}")
+        content = [{"type": "image"} for _ in images] + [{"type": "text", "text": prompt}]
+        messages = [{"role": "user", "content": content}]
         with self.lock:
-            return self._query(prompt, image_path, image_bytes, explicit_adapter, max_new_tokens, modality, chat_history, scene_facts)
+            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.processor(text=[text], images=list(images) or None, return_tensors="pt", padding=True).to(self.model.device)
+            if adapter is None:
+                context_manager = self.model.disable_adapter()
+            else:
+                self.model.set_adapter(adapter)
+                context_manager = nullcontext()
+            with torch.no_grad():
+                with context_manager:
+                    outputs = self.model.generate(
+                        **inputs, max_new_tokens=max_new_tokens, do_sample=False,
+                        output_logits=True, return_dict_in_generate=True,
+                    )
+        generated_ids = outputs.sequences[0][inputs["input_ids"].shape[1]:]
+        answer = self.processor.decode(generated_ids, skip_special_tokens=True).strip()
+        try:
+            confidence = _mean_token_probability(outputs.logits, generated_ids)
+        except Exception as e:
+            print(f"Could not compute generation confidence: {e}")
+            confidence = None
+        return answer, confidence
 
-    def _query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None, scene_facts: str = "") -> str:
+    def query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None, scene_facts: str = "", answer_hint: str = ""):
+        """Thread-safe entry point: only one request may switch adapters and generate at a time.
+        Returns (answer, confidence): confidence is the real, computed mean generation-token
+        probability (see _mean_token_probability) for a free-text answer, or None when there was
+        nothing to measure it from (the grid-classification branch below, or an empty generation)."""
+        with self.lock:
+            return self._query(prompt, image_path, image_bytes, explicit_adapter, max_new_tokens, modality, chat_history, scene_facts,
+                               answer_hint)
+
+    def _query(self, prompt: str, image_path: str = None, image_bytes: bytes = None, explicit_adapter: str = "general", max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS, modality: str = "optical", chat_history: list = None, scene_facts: str = "", answer_hint: str = ""):
         has_image = (image_path is not None and os.path.exists(image_path)) or (image_bytes is not None)
         
         # Override with the UI button's choice
@@ -236,44 +317,56 @@ class SatQueryEngine:
                 scene_description = self._describe_scene(img, modality)
             messages = build_general_messages(
                 prompt, has_image, chat_history, modality,
-                scene_facts=scene_facts, scene_description=scene_description,
+                scene_facts=scene_facts, scene_description=scene_description, answer_hint=answer_hint,
             )
 
         if active_adapter in ["mining", "deforestation", "agriculture"] and has_image:
-            # 4x4 Grid = 16 precise squares. The AI answers Yes/No for each square.
+            # 4x4 Grid = 16 precise squares. The AI answers Yes/No for each square. (Not the path
+            # main_api.py's scans actually use - that calls scan_scores() directly, which has its own
+            # P(yes)-based confidence per tile. This branch has no comparable per-generation signal.)
             global_boxes = self._grid_classification(img, internal_prompt, grid_size=(4, 4))
-            
+
             if not global_boxes:
                 if active_adapter == "mining":
-                    return "No surface extraction or pit mining features detected in this sector."
+                    return "No surface extraction or pit mining features detected in this sector.", None
                 elif active_adapter == "deforestation":
-                    return "No active logging or canopy loss detected."
+                    return "No active logging or canopy loss detected.", None
                 elif active_adapter == "agriculture":
-                    return "No distinct agricultural features detected."
-                    
-            return str(global_boxes)
+                    return "No distinct agricultural features detected.", None
+
+            return str(global_boxes), None
 
         text_input = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.processor(text=[text_input], images=images, return_tensors="pt", padding=True).to(self.model.device)
 
         with torch.no_grad():
             with context_manager:
-                output_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens, repetition_penalty=1.05)
+                outputs = self.model.generate(
+                    **inputs, max_new_tokens=max_new_tokens, repetition_penalty=1.05,
+                    output_logits=True, return_dict_in_generate=True,
+                )
 
+        output_ids = outputs.sequences
         generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
         raw_response = self.processor.decode(generated_ids, skip_special_tokens=True).strip()
+        try:
+            confidence = _mean_token_probability(outputs.logits, generated_ids)
+        except Exception as e:
+            # A nice-to-have signal, never allowed to take the real answer down with it.
+            print(f"Could not compute generation confidence: {e}")
+            confidence = None
 
         # --- 2. MULTI-WORD NEGATIVE FORMATTING ---
         # Translate the blunt 'no' into a professional UI response
         if raw_response.lower() in ["no", "none", "[]", "null"]:
             if active_adapter == "mining":
-                return "No surface extraction or pit mining features detected in this sector."
+                return "No surface extraction or pit mining features detected in this sector.", confidence
             elif active_adapter == "deforestation":
-                return "No active logging or canopy loss detected."
+                return "No active logging or canopy loss detected.", confidence
             elif active_adapter == "agriculture":
-                return "No distinct agricultural features detected."
-                
-        return raw_response
+                return "No distinct agricultural features detected.", confidence
+
+        return raw_response, confidence
 
 # The engine is created by load_agent() (called from the FastAPI lifespan), never at import time,
 # so a missing adapter or failed model download cannot crash the app before it starts serving.

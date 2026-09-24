@@ -60,7 +60,8 @@ def general_system_prompt(modality: str = "optical") -> str:
         "(upper-left, centre, along the bottom edge...), and note shapes, textures, colours and "
         "patterns. Never assume a feature exists; if you are unsure of one, say it is unclear rather "
         "than guessing. "
-        f"Reply in two parts, under {REPLY_WORD_LIMIT} words total.\n"
+        f"Reply in two parts, under {REPLY_WORD_LIMIT} words total (only a sentence or two if the user asks "
+        "for a short answer).\n"
         "OBSERVATIONS: the visible features relevant to the question, each with its location.\n"
         "ASSESSMENT: a direct answer to the question, from those observations; if the image cannot "
         "answer it, say what it does show. Amounts in words (\"about half\", \"a handful\"). Quote "
@@ -157,8 +158,9 @@ def history_for_model(history: Any, current_prompt: str, max_turns: int = MAX_HI
     ]
 
 
-def build_question_text(prompt: str, scene_facts: str = "", scene_description: str = "") -> str:
-    """The current user turn: the question, preceded by any measured facts / first-pass description."""
+def build_question_text(prompt: str, scene_facts: str = "", scene_description: str = "", answer_hint: str = "") -> str:
+    """The current user turn: the question, preceded by any measured facts / first-pass description, and (for a
+    closed question) the short answer the remote-sensing VQA adapter already gave."""
     blocks = []
     if scene_facts:
         blocks.append(f"Measured facts (computed from the pixels; they describe pixels, not materials): {scene_facts}")
@@ -166,6 +168,11 @@ def build_question_text(prompt: str, scene_facts: str = "", scene_description: s
         blocks.append(
             "Notes from a first look at the image and its quadrants (may contain mistakes; "
             f"trust the image over them):\n{scene_description}"
+        )
+    if answer_hint:
+        blocks.append(
+            f"A model fine-tuned on satellite imagery answered this question: {answer_hint}. Describe what you "
+            "can see in the image that supports or contradicts that answer. Do not repeat the answer on its own."
         )
     if not blocks:
         return prompt
@@ -179,12 +186,13 @@ def build_general_messages(
     modality: str = "optical",
     scene_facts: str = "",
     scene_description: str = "",
+    answer_hint: str = "",
 ) -> List[Dict[str, Any]]:
     """System role + prior turns (text only) + the current question, with the image attached to the
     current question."""
     messages: List[Dict[str, Any]] = [{"role": "system", "content": general_system_prompt(modality)}]
     messages.extend(history_for_model(history, prompt))
-    question = build_question_text(prompt, scene_facts, scene_description) if has_image else prompt
+    question = build_question_text(prompt, scene_facts, scene_description, answer_hint) if has_image else prompt
     if has_image:
         messages.append({"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]})
     else:
