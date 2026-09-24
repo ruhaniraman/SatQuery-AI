@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bot, CircleAlert, CircleStop, ImageIcon, SendHorizontal, User } from 'lucide-react';
 import { Button, EmptyState, FormattedAnswer, Notice, cx } from '../ui';
+import ConfidenceBadge from '../ConfidenceBadge';
 
 const SUGGESTIONS = [
   'What land cover is visible?',
@@ -28,6 +29,7 @@ function Message({ msg }) {
         isUser ? 'whitespace-pre-wrap border-slate-700/50 bg-slate-800/60 text-slate-100' : 'border-blue-700/40 bg-blue-950/30 text-blue-50',
       )}>
         {isUser ? msg.content : <FormattedAnswer text={msg.content} />}
+        {!isUser && <ConfidenceBadge info={msg.confidence} />}
       </div>
     </div>
   );

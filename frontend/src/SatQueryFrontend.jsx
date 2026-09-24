@@ -1,7 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { setOptions, importLibrary } from '@googlemaps/js-api-loader';
-import { Link } from 'react-router-dom';
 import { useNavigate } from 'react-router-dom';
+import LandingSections, { LandingNav } from './landing/LandingSections';
 
 const SatQueryFrontend = () => {
   const navigate = useNavigate();
@@ -9,6 +9,8 @@ const SatQueryFrontend = () => {
   const map3DRef = useRef(null);
   const requestRef = useRef();
   const headingValue = useRef(0);
+  const pageRef = useRef(null);
+  const [pastHero, setPastHero] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -18,7 +20,7 @@ const SatQueryFrontend = () => {
       const link = document.createElement('link');
       link.id = linkId;
       link.rel = 'stylesheet';
-      link.href = 'https://fonts.googleapis.com/css2?family=Outfit:wght@800;900&family=Inter:wght@400;500;600&display=swap';
+      link.href = 'https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;700;800;900&family=Inter:wght@400;500;600&display=swap';
       document.head.appendChild(link);
     }
 
@@ -76,13 +78,29 @@ const SatQueryFrontend = () => {
     };
   }, []);
 
+  // The floating nav appears once most of the hero has scrolled away.
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!page) return undefined;
+    const onScroll = () => setPastHero(page.scrollTop > page.clientHeight * 0.75);
+    onScroll();
+    page.addEventListener('scroll', onScroll, { passive: true });
+    return () => page.removeEventListener('scroll', onScroll);
+  }, []);
+
   const scrollToTop = (e) => {
-    e.preventDefault();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    e?.preventDefault();
+    pageRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const scrollToProduct = () => {
+    document.getElementById('product')?.scrollIntoView({ behavior: 'smooth' });
   };
 
   return (
-    <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#030712', color: '#fff' }}>
+    <div ref={pageRef} className="sql-page">
+    <LandingNav shown={pastHero} onTop={scrollToTop} />
+    <div className="sql-hero" style={{ color: '#fff' }}>
       
       {/* Background 3D Globe Container */}
       <div 
@@ -126,24 +144,6 @@ const SatQueryFrontend = () => {
         >
           SIH 2026
         </div>
-
-        <Link 
-          to="/about" 
-          style={{
-            fontSize: '0.75rem',
-            fontWeight: 500,
-            letterSpacing: '3px',
-            color: '#64748b',
-            textDecoration: 'none',
-            textTransform: 'uppercase',
-            transition: 'color 0.2s ease',
-            cursor: 'pointer'
-          }}
-          onMouseOver={(e) => e.currentTarget.style.color = '#ffffff'}
-          onMouseOut={(e) => e.currentTarget.style.color = '#64748b'}
-        >
-          About
-        </Link>
       </nav>
       
       {/* Cinematic Poster Typography Layer */}
@@ -165,10 +165,10 @@ const SatQueryFrontend = () => {
           fontSize: '0.8rem', 
           textTransform: 'uppercase', 
           letterSpacing: '5px', 
-          color: '#60a5fa', 
+          color: '#2dd4bf', 
           marginBottom: '1.2rem', 
           fontWeight: 600,
-          textShadow: '0 0 15px rgba(96, 165, 250, 0.6)',
+          textShadow: '0 0 15px rgba(45, 212, 191, 0.6)',
           pointerEvents: 'auto'
         }}>
           ✦ Intelligent Earth Observation
@@ -215,6 +215,13 @@ const SatQueryFrontend = () => {
         </div>
       </div>
 
+      <button type="button" className="sql-scroll-cue" onClick={scrollToProduct}>
+        Explore
+        <span className="sql-cue-line" />
+      </button>
+
+    </div>
+    <LandingSections />
     </div>
   );
 };

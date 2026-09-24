@@ -217,7 +217,7 @@ def test_missing_root_is_harmless(tmp_path):
 
 def test_answer_text_is_identical_in_response_history_and_saved_record(client):
     import json
-    client.agent.query = lambda **kw: "**Water** covers *most* of the scene."
+    client.agent.query = lambda **kw: ("**Water** covers *most* of the scene.", 0.9)
     r = post(client, [("images", ("a.png", png(), "image/png"))], query="q",
              chat_history=json.dumps([{"role": "user", "content": "q"}]))
     assert r.status_code == 200, r.text

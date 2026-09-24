@@ -1,0 +1,72 @@
+{
+  "base_model": "Qwen/Qwen2-VL-2B-Instruct",
+  "quantization": "4-bit NF4, double quant, bf16 compute",
+  "trained_on": {
+    "benchmark": "rsvqa-lr",
+    "split": "train",
+    "root": "D:\\SatQuery-AI\\backend\\data\\benchmarks\\RSVQA_LR",
+    "questions": 57223,
+    "images": 572,
+    "packs": 4004,
+    "packs_used": 4004
+  },
+  "prompt_format": "evaluation.answer_space.benchmark_prompt (the harness's short-answer prompt)",
+  "hyperparameters": {
+    "epochs": 1.0,
+    "per_pack": 16,
+    "grad_accum": 4,
+    "lr": 0.0001,
+    "warmup": 30,
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "seed": 0
+  },
+  "target_modules": [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+  ],
+  "git_commit": "b2065ea+uncommitted",
+  "started_utc": "2026-09-23T07:33:28.169941+00:00",
+  "resumed": [
+    {
+      "from": "D:\\SatQuery-AI\\backend\\models\\adapters\\vqa\\checkpoint-500",
+      "at_step": 500,
+      "utc": "2026-09-23T07:33:28.170264+00:00"
+    },
+    {
+      "from": "D:\\SatQuery-AI\\backend\\models\\adapters\\vqa\\checkpoint-600",
+      "at_step": 600,
+      "utc": "2026-09-23T08:03:10.664396+00:00"
+    },
+    {
+      "from": "D:\\SatQuery-AI\\backend\\models\\adapters\\vqa\\checkpoint-700",
+      "at_step": 700,
+      "utc": "2026-09-23T08:35:01.944554+00:00"
+    },
+    {
+      "from": "D:\\SatQuery-AI\\backend\\models\\adapters\\vqa\\checkpoint-800",
+      "at_step": 800,
+      "utc": "2026-09-23T09:05:02.115538+00:00"
+    },
+    {
+      "from": "D:\\SatQuery-AI\\backend\\models\\adapters\\vqa\\checkpoint-900",
+      "at_step": 900,
+      "utc": "2026-09-23T09:34:05.893681+00:00"
+    },
+    {
+      "from": "D:\\SatQuery-AI\\backend\\models\\adapters\\vqa\\checkpoint-1000",
+      "at_step": 1000,
+      "utc": "2026-09-23T10:03:25.482078+00:00"
+    }
+  ],
+  "last_checkpoint": 1000,
+  "finished_utc": "2026-09-23T10:03:46.471822+00:00",
+  "optimizer_steps": 1001,
+  "train_minutes": 0.3
+}

@@ -262,7 +262,12 @@ class GenModel:
     def generate(self, **kw):
         self.generate_calls.append(kw)
         n = kw["n"]
-        return [list(range(5)) + [100 + i] for i in range(n)]
+        sequences = [list(range(5)) + [100 + i] for i in range(n)]
+        if kw.get("return_dict_in_generate"):
+            # One generated token per row here; scores is deliberately shaped so the real _query()
+            # code path (torch.softmax et al) is exercised, not stubbed around.
+            return types.SimpleNamespace(sequences=sequences, scores=(FakeArr(np.full((n, 30), -5.0)),))
+        return sequences
 
 
 def general_engine(controller):

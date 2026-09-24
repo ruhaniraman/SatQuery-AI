@@ -4,6 +4,7 @@ import {
 } from '../utils/api';
 import { readToken } from '../utils/auth';
 import { mapLink } from '../utils/scanResult';
+import { confidenceInfo } from '../utils/confidence';
 import {
   addRun, dropRunsFor, emptySlot, isAnnotated, latestRun, makeRun, pickReportRun,
 } from '../utils/runs';
@@ -143,7 +144,7 @@ export function useWorkspace() {
       const data = await requestAnalysis({ query, adapter, images, history, token: readToken(), signal: controller.signal });
       const run = makeRun({ kind, title, data, adapter: kind === 'scan' ? adapter : null, meta });
       setRuns((prev) => addRun(prev, run));
-      setChat((prev) => [...prev, { role: 'ai', content: data.answer, ...scope }]);
+      setChat((prev) => [...prev, { role: 'ai', content: data.answer, confidence: confidenceInfo(data), ...scope }]);
       // The backend draws detected regions / the change overlay / the fused composite into the evidence
       // image, so show it for scans and two-image runs.
       if (revealEvidence && data.visual_evidence_url && isAnnotated(kind)) {

@@ -4,7 +4,6 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 // Import your two pages (make sure the file paths match where they are saved!)
 import SatQueryFrontend from './SatQueryFrontend';
 import Dashboard from './Dashboard';
-import About from './About'; 
 import { AuthProvider } from './auth/AuthContext';
 import RequireAuth from './auth/RequireAuth';
 import AuthPage from './auth/AuthPage';
@@ -18,9 +17,6 @@ function App() {
         {/* When the URL is exactly "/", load the 3D Globe home page */}
         <Route path="/" element={<SatQueryFrontend />} />
         
-        {/* When the URL is "/about", load the glass slab About page */}
-        <Route path="/about" element={<About />} />
-
         <Route path="/login" element={<AuthPage key="login" mode="login" />} />
         <Route path="/signup" element={<AuthPage key="signup" mode="signup" />} />
 

@@ -1,0 +1,11 @@
+{
+  "trained_on": {
+    "description": "BigEarthNet (Sentinel-2) subset of about 14,000 samples, trained by the team on Kaggle",
+    "dataset": "BigEarthNet (Sentinel-2)",
+    "samples": "about 14,000",
+    "platform": "Kaggle",
+    "task": "yes/no presence of deforestation features (answered as the first token; see ADAPTER_QUESTIONS)"
+  },
+  "source": "Stated by the team member who trained the adapter (23 Sept 2026). The Kaggle notebook, exact BigEarthNet version, label mapping and hyperparameters are not in this repository.",
+  "base_model": "Qwen/Qwen2-VL-2B-Instruct"
+}
