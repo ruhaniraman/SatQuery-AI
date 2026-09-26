@@ -1,9 +1,10 @@
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { ImageIcon, Loader2, RefreshCw, TriangleAlert, Upload } from 'lucide-react';
-import { Button, EmptyState, PreviewImage, cx } from './ui';
+import { Button, EmptyState, PreviewImage } from './ui';
+import { cx } from './uiHelpers';
 import ZoomPan from './ZoomPan';
 import CompareSlider from './CompareSlider';
-import { ACCEPT } from './ImageSlot';
+import { ACCEPT } from '../constants';
 import { evidenceUrl } from '../utils/api';
 import { useImageAspect } from '../hooks/useImageAspect';
 

@@ -1,6 +1,6 @@
-import React from 'react';
 import { ArrowRight, Check, ChevronLeft, ChevronRight, CircleAlert, Info, Loader2, RefreshCw } from 'lucide-react';
-import { Button, cx } from './ui';
+import { Button } from './ui';
+import { cx } from './uiHelpers';
 import { formatReleaseDate, yearTicks } from '../utils/wayback';
 import { SAME_AREA_MIN, boundsOverlap } from '../utils/views';
 

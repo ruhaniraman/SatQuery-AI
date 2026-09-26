@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Check, ChevronDown, Copy, Crosshair, MapPin, TriangleAlert } from 'lucide-react';
-import { Button, Notice, cx } from './ui';
+import { Button, Notice } from './ui';
+import { cx } from './uiHelpers';
 import { findingLine, levelOf, pinClass, summaryText, thresholdPercent } from '../utils/scanResult';
 
 function Pin({ scan, n, className = '' }) {

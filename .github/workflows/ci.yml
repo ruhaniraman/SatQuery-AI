@@ -54,4 +54,3 @@ jobs:
 
       - name: Lint
         run: npm run lint
-        continue-on-error: true   # two pre-existing findings are documented in CLAUDE.md, not yet fixed

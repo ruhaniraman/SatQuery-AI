@@ -235,3 +235,32 @@ test('checkHealth gives up on a hung backend instead of waiting forever', async 
   assert.equal(out.state, 'offline');
   assert.ok(Date.now() - started < 1000);
 });
+
+
+// ------------------------------------------------------------------ sign-in
+
+test('the model endpoints send the session token as a Bearer header, and nothing without one', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push(init.headers);
+    return { ok: true, status: 200, json: async () => ({}), blob: async () => new Blob(['x']) };
+  };
+  const opts = { fetchImpl, baseUrl: 'http://api', token: 'tok' };
+  await requestAnalysis({ query: 'q', images: [{ file: file('a.png'), modality: 'optical' }], ...opts });
+  await requestPreview({ file: file('a.tif'), ...opts });
+  await requestReport({ sessionId: 'abc', ...opts });
+  assert.deepEqual(seen, Array(3).fill({ Authorization: 'Bearer tok' }));
+  await requestPreview({ file: file('a.tif'), fetchImpl, baseUrl: 'http://api' });
+  assert.equal(seen.at(-1), undefined);
+});
+
+test('a 401 keeps its status so the dashboard can send the person to sign in', async () => {
+  const signedOut = async () => response(401, JSON.stringify({ detail: 'Please sign in again: your session has expired.' }));
+  for (const call of [
+    () => requestAnalysis({ query: 'q', images: [{ file: file('a.png'), modality: 'optical' }], fetchImpl: signedOut }),
+    () => requestPreview({ file: file('a.tif'), fetchImpl: signedOut }),
+    () => requestReport({ sessionId: 'abc', fetchImpl: signedOut }),
+  ]) {
+    await assert.rejects(call(), (err) => err.status === 401 && /sign in again/.test(err.message));
+  }
+});

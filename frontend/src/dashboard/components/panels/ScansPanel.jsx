@@ -1,8 +1,9 @@
-import React from 'react';
-import { CircleAlert, Eye, Pickaxe, Sprout, Trees } from 'lucide-react';
-import { Button, Card, Label, Notice, cx, useScrollToNew } from '../ui';
+import { CircleAlert, Eye } from 'lucide-react';
+import { Button, Card, Label, Notice } from '../ui';
+import { cx, useScrollToNew } from '../uiHelpers';
 import ScanResult from '../ScanResult';
 import { mapLink } from '../../utils/scanResult';
+import { SCANS } from '../../constants';
 
 // Tailwind needs the class names written out in full, so each tone lists them explicitly.
 const TONES = {
@@ -10,12 +11,6 @@ const TONES = {
   emerald: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300',
   rose: 'border-rose-500/30 bg-rose-500/15 text-rose-300',
 };
-
-export const SCANS = [
-  { id: 'mining', title: 'Mining', icon: Pickaxe, tone: 'amber', description: 'Surface extraction pits, quarries and open-cast workings.' },
-  { id: 'agriculture', title: 'Agriculture', icon: Sprout, tone: 'emerald', description: 'Cultivated fields and crop rows.' },
-  { id: 'deforestation', title: 'Deforestation', icon: Trees, tone: 'rose', description: 'Clear-cut land, active logging and canopy loss.' },
-];
 
 function ScanCard({ scan, ws }) {
   const { runScan, isExecuting, busy, slots } = ws;

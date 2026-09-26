@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CircleAlert, ExternalLink, Loader2, Unplug, X } from 'lucide-react';
-import { Button, Segmented, cx } from './ui';
+import { Button, Segmented } from './ui';
+import { cx } from './uiHelpers';
 import {
   CDSE_HELP, CDSE_SENTINEL_HUB, CDSE_SIGNUP, buildCdseTemplate, describeSarSource, testSarTemplate, validateTemplate,
 } from '../utils/sarSource';

@@ -3,7 +3,8 @@ import { Check, Download, History, Loader2, Pencil, RotateCcw, X } from 'lucide-
 import { AuthContext } from '../../auth/authState';
 import { readToken, renameReport as requestRenameReport, fetchMyReports } from '../utils/auth';
 import { evidenceUrl, humanizeIdentifier, reportUrl, savePdf } from '../utils/api';
-import { Card, Label, Notice, PreviewImage, cx } from './ui';
+import { Card, Label, Notice, PreviewImage } from './ui';
+import { cx } from './uiHelpers';
 
 const when = (epochSeconds) => new Date(epochSeconds * 1000).toLocaleString(undefined, {
   dateStyle: 'medium', timeStyle: 'short',

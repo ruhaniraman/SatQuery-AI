@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { setOptions, importLibrary } from '@googlemaps/js-api-loader';
 import { useNavigate } from 'react-router-dom';
 import LandingSections, { LandingNav } from './landing/LandingSections';
@@ -26,7 +26,7 @@ const SatQueryFrontend = () => {
 
     const initMap = async () => {
       try {
-        const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || process.env.REACT_APP_GOOGLE_MAPS_API_KEY;
+        const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
         setOptions({
           key: apiKey,

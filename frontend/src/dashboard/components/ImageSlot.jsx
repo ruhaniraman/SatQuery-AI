@@ -1,14 +1,11 @@
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { ImageIcon, Loader2, RefreshCw, TriangleAlert, Upload, X } from 'lucide-react';
-import { Button, Card, PreviewImage, Segmented, cx } from './ui';
+import { Button, Card, PreviewImage, Segmented } from './ui';
+import { cx } from './uiHelpers';
 import { formatBytes, isTiffFile } from '../utils/api';
 import { describeCapture } from '../utils/views';
+import { ACCEPT, SENSORS } from '../constants';
 
-export const ACCEPT = 'image/jpeg,image/png,image/webp,image/tiff,.tif,.tiff';
-export const SENSORS = [
-  { value: 'optical', label: 'Optical', title: 'Colour imagery' },
-  { value: 'sar', label: 'SAR', title: 'Radar imagery: despeckled and described by brightness, not colour' },
-];
 const SENSOR_LABEL = { optical: 'Optical', sar: 'SAR' };
 
 // The small square next to a chosen file: the image itself, or a spinner while a TIFF is being rendered

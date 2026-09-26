@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 # e.g. GOOGLE_CLIENT_ID, SMTP_*, AUTH_DB. A real env var set outside this file still wins (override=False).
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,13 +36,13 @@ from geospatial_preprocessing.acquisition_date import extract_acquisition_date, 
 
 from agent_manager.agent_controller import get_agent, load_agent
 from report_retention import purge_old_reports, retention_hours
-from auth import router as auth_router, save_report_for_token
+from auth import require_user, router as auth_router, save_report_for_token, user_owns_report
 from upload_validation import UploadTooLarge, detect_image_kind, max_request_bytes, max_upload_bytes, read_limited
 from agent_manager.schemas import ExecutionTrace, ImageInput, TaskType
 from agent_manager.prompts import DEFAULT_MAX_NEW_TOKENS, describe_first_enabled, history_for_model
 from agent_manager.scene_stats import compute_scene_stats, format_scene_stats
 from agent_manager.clarification import needs_clarification
-from agent_manager.closed_questions import closed_question_space, display_answer
+from agent_manager.closed_questions import adapter_question_space, display_answer
 from evaluation.answer_space import benchmark_prompt
 from agent_manager.scan_compare import summarize_scan_change
 from change_detection.change_report import compare_report_enabled, lora_compare_enabled
@@ -92,12 +92,16 @@ async def limit_request_size(request, call_next):
     return await call_next(request)
 
 
+def cors_origins() -> List[str]:
+    """Browser origins allowed to call the API: env CORS_ORIGINS (comma-separated, e.g. the deployed dashboard's
+    https://satquery.example.org), else the local Vite dev server."""
+    configured = [o.strip().rstrip("/") for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+    return configured or ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", 
-        "http://127.0.0.1:5173"
-    ], 
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -228,16 +232,21 @@ def analyze(
     modality_b: str = Form("optical", description="Sensor type of image 2: optical | sar"), 
     chat_history: Optional[str] = Form(None, description="Stringified JSON of the conversation"),
     images: List[UploadFile] = File(default=[], description="Up to 2 images"),
-    authorization: Optional[str] = Header(default=None, description="Bearer token: if signed in, this run is added to the account's report history"),
+    authorization: Optional[str] = Header(default=None, description="Bearer token of the signed-in user; the run is added to that account's report history"),
+    _user: Optional[dict] = Depends(require_user),
 ):
     engine = _agent()  # 503 before doing any work if the model is not available
 
     parsed_history = []
+    history_warnings: List[str] = []
     if chat_history:
         try:
             parsed_history = json.loads(chat_history)
-        except Exception:
-            pass
+        except ValueError:
+            parsed_history = None
+        if not isinstance(parsed_history, list):
+            parsed_history = []
+            history_warnings.append("The chat history sent with this request was not a JSON list; it was ignored.")
 
     if len(images) > 2:
         raise HTTPException(
@@ -278,7 +287,7 @@ def analyze(
         try:
             content = read_limited(img.file, max_upload_bytes())
         except UploadTooLarge as e:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e))
+            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(e))
         # The declared content type and the filename are the client's word; the bytes are the truth.
         kind = detect_image_kind(content)
         if kind is None:
@@ -379,9 +388,9 @@ def analyze(
             if clarification:
                 ai_answer = clarification
             elif adapter == "general":
-                # Yes/no, count and rural/urban questions: the remote-sensing VQA adapter gives the short answer
+                # Yes/no and rural/urban questions: the remote-sensing VQA adapter gives the short answer
                 # (optical only - it was trained on Sentinel-2 RGB), then the general path explains it.
-                closed = (closed_question_space(query)
+                closed = (adapter_question_space(query)
                           if modality_a == "optical" and VQA_ADAPTER in getattr(engine, "adapter_info", {}) else None)
                 if closed is not None:
                     reply, short_confidence = engine.short_answer(
@@ -452,7 +461,7 @@ def analyze(
                 stages = ["RuleBasedRouter", "InputPreprocessor"] + (["AdaptedVQASpecialist"] if short_answer else []) + [
                     "SingleImageSpecialist"]
                 print(f"[{session_id}] Executed {telemetry['model_used']}")
-            agent_trace = _make_trace(session_id, task, routing_reason, stages, telemetry)
+            agent_trace = _make_trace(session_id, task, routing_reason, stages, telemetry, warnings=history_warnings)
             
         elif task == TaskType.CHANGE_DETECTION:
             print("Routing to CDVQA Specialist via Agent Manager...")
@@ -579,7 +588,7 @@ def analyze(
                     "measured_before_after": cd_result.measured_facts or "unavailable",
                     "temporal_order": temporal_order.to_dict(),
                 },
-                warnings=loader_warnings + temporal_order.warnings + cd_result.warnings,
+                warnings=history_warnings + loader_warnings + temporal_order.warnings + cd_result.warnings,
                 validation_status="image payload checks passed",
             )
         elif task == TaskType.OPTICAL_SAR_FUSION:
@@ -633,7 +642,7 @@ def analyze(
                     "sar_despeckled": True,
                     "sar_input_units": sar_meta.get("sar_input_units"),
                 },
-                warnings=opt_meta.get("warnings", []) + sar_meta.get("warnings", []),
+                warnings=history_warnings + opt_meta.get("warnings", []) + sar_meta.get("warnings", []),
             )
     except HTTPException:
         # Deliberate 4xx errors raised above must reach the client unchanged, not become 500s
@@ -668,8 +677,8 @@ def analyze(
     with open(os.path.join(session_folder, "data.json"), "w") as f:
         json.dump(record, f)
 
-    # Optional: if the caller is signed in, this run joins their account's report history (GET
-    # /auth/reports). Anonymous use is unaffected either way.
+    # The run joins the signed-in account's report history (GET /auth/reports); /report checks it later.
+    # With sign-in switched off (REQUIRE_SIGN_IN=0) an anonymous run is simply not recorded.
     token = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
     save_report_for_token(token, session_id, query, agent_trace.task.value)
 
@@ -728,6 +737,7 @@ def health():
 def preview(
     modality: str = Form("optical", description="Sensor type: optical | sar (SAR is despeckled like an analysis run)"),
     image: UploadFile = File(..., description="The image to preview"),
+    _user: Optional[dict] = Depends(require_user),
 ):
     """Runs the file through the same loader the analysis uses, so the preview is what the model will
     see (percentile stretch, SAR despeckle), scaled down to at most PREVIEW_MAX_SIDE pixels."""
@@ -739,7 +749,7 @@ def preview(
     try:
         content = read_limited(image.file, max_upload_bytes())
     except UploadTooLarge as e:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(e))
     kind = detect_image_kind(content)
     if kind is None:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=f"'{image.filename}' is not a valid JPEG, PNG, WebP, or TIFF image.")
@@ -776,12 +786,16 @@ def rebuild_report(
     session_id: str = Form(..., description="The run (its evidence image and trace) the report is built on"),
     chat_history: Optional[str] = Form(None, description="Stringified JSON of the whole conversation so far"),
     map_link: Optional[str] = Form(None, description="Link to the analysed view on a map (live-map captures), shown in scan reports"),
+    user: Optional[dict] = Depends(require_user),
 ):
     """Every /analyze call writes its own PDF, but a chat has many runs and later plain questions carry
     only the raw image as evidence. This lets the UI pick which run's evidence the report shows while
     still printing the complete conversation."""
     if not _SESSION_ID.match(session_id or ""):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid session id.")
+    # Only the account that ran the analysis may rebuild its report (same 404 as a missing run: reveals nothing).
+    if user is not None and not user_owns_report(user["id"], session_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such analysis run.")
     folder = os.path.join("reports", session_id)
     data_path = os.path.join(folder, "data.json")
     if not os.path.exists(data_path):

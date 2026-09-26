@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CircleMarker, ImageOverlay, MapContainer, Pane, ScaleControl, TileLayer, Tooltip, ZoomControl, useMap, useMapEvents } from 'react-leaflet';
 import { Settings2, Tag } from 'lucide-react';
 import { MAP_CONFIG, formatLatLng, layerSettings } from '../utils/mapConfig';
@@ -11,7 +11,8 @@ import MapAsk from './MapAsk';
 import CoordinateBox from './CoordinateBox';
 import Timeline from './Timeline';
 import SarDialog from './SarDialog';
-import { Segmented, cx } from './ui';
+import { Segmented } from './ui';
+import { cx } from './uiHelpers';
 
 // Leaflet measures its container once. When the tool panel collapses, the window resizes, or the
 // map is shown again after being hidden, it has to be told to re-measure or tiles render offset.

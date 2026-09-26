@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Bot, CircleAlert, CircleStop, ImageIcon, SendHorizontal, User } from 'lucide-react';
-import { Button, EmptyState, FormattedAnswer, Notice, cx } from '../ui';
+import { Button, EmptyState, FormattedAnswer, Notice } from '../ui';
+import { cx } from '../uiHelpers';
 import ConfidenceBadge from '../ConfidenceBadge';
 
 const SUGGESTIONS = [

@@ -1,11 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, ChevronDown, CircleAlert, Eye, EyeOff, ImageDown, MessageSquare, SendHorizontal, X } from 'lucide-react';
-import { Button, FormattedAnswer, Notice, cx } from './ui';
+import { Button, FormattedAnswer, Notice } from './ui';
+import { cx } from './uiHelpers';
 import ScanResult from './ScanResult';
 import ConfidenceBadge from './ConfidenceBadge';
 import { confidenceInfo } from '../utils/confidence';
 import { mapLink } from '../utils/scanResult';
-import { SCANS } from './panels/ScansPanel';
+import { SCANS } from '../constants';
 import { evidenceUrl } from '../utils/api';
 import { captureFileName } from '../utils/views';
 

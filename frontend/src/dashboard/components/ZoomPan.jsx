@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react';
 import { IDENTITY, focusView, isZoomed, panBy, wheelFactor, zoomAt, zoomLabel } from '../utils/viewMath';
-import { cx } from './ui';
+import { cx } from './uiHelpers';
 
 // Wheel to zoom about the cursor, drag to pan, double-click to zoom in or back out, and +/-/0 keys. The
 // arithmetic (and its limits) is in utils/viewMath.js. Give it a `key` that changes with its content so

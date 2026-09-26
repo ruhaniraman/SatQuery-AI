@@ -1,4 +1,4 @@
-import React, { useId, useState } from 'react';
+import { useId, useState } from 'react';
 
 // Small drawn previews for the three capability cards on the landing page. They are illustrations of
 // what each feature shows, not real model output.

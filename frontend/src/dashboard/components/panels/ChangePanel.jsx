@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { CircleAlert, Columns2, Eye, Play, TriangleAlert } from 'lucide-react';
-import { Button, Card, Label, Notice, Segmented, useScrollToNew } from '../ui';
-import ImageSlot, { SENSORS } from '../ImageSlot';
+import { Button, Card, Label, Notice, Segmented } from '../ui';
+import { useScrollToNew } from '../uiHelpers';
+import ImageSlot from '../ImageSlot';
+import { SENSORS } from '../../constants';
 import ChangeAnswer from '../ChangeAnswer';
 import { runTime } from '../../utils/runs';
 import { SAME_AREA_MIN, boundsOverlap } from '../../utils/views';

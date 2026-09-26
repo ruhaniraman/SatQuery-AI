@@ -68,7 +68,7 @@ export async function captureMapView(map, layer, { doc = document } = {}) {
     });
   } catch (err) {
     if (err?.name === 'SecurityError') {
-      throw new Error("This map provider does not allow its imagery to be exported (missing CORS headers).");
+      throw new Error("This map provider does not allow its imagery to be exported (missing CORS headers).", { cause: err });
     }
     throw err;
   }

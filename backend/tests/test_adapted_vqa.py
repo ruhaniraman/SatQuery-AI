@@ -7,7 +7,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agent_manager.closed_questions import closed_question_space, display_answer  # noqa: E402
+from agent_manager.closed_questions import adapter_question_space, closed_question_space, display_answer  # noqa: E402
 from test_endpoint_wiring import client, png_bytes, post  # noqa: E402,F401
 
 VQA_INFO = {"base_model": "Qwen/Qwen2-VL-2B-Instruct", "lora_rank": 16, "lora_alpha": 32,
@@ -44,6 +44,23 @@ def test_question_kinds():
     for open_question in ("Describe the land cover.", "What changed here?", "Where is the river?",
                           "Is it forest or farmland?", "Which area is flooded?", ""):
         assert closed_question_space(open_question) is None, open_question
+
+
+def test_polite_requests_and_mixed_questions_are_not_yes_no():
+    for request in ("Can you describe the land cover in this image?", "Could you tell me what is going on here?",
+                    "Would you explain the scene?", "Will you check the image", "Do you see anything unusual? Describe it.",
+                    "Are there buildings near the water body, and where?", "Is there water, and which side is it on?"):
+        assert closed_question_space(request) is None, request
+    # Still yes/no: "can" / "could" about the scene itself, not a request to the assistant.
+    assert closed_question_space("Can a road be seen near the river?").kind == "closed"
+    assert closed_question_space("Has the built-up area increased?").kind == "closed"
+
+
+def test_counts_are_not_sent_to_the_adapter():
+    assert closed_question_space("How many ponds are there?").kind == "numeric"      # recognised...
+    assert adapter_question_space("How many ponds are there?") is None               # ...but not routed
+    assert adapter_question_space("Is there a pond?").kind == "closed"
+    assert adapter_question_space("Is this area rural or urban?").options == ["rural", "urban"]
 
 
 def test_display_answer_only_accepts_a_real_answer():
@@ -85,11 +102,19 @@ def test_open_question_is_unchanged(client):
 
 def test_unusable_adapter_reply_falls_back_to_the_general_answer(client):
     _with_adapter(client, reply="hard to say", confidence=0.4)
-    data = _ask(client, "How many buildings are there?")
+    data = _ask(client, "Are there buildings?")
     assert data["answer"] == "A plain answer."
     tel = data["agent_execution_trace"]["telemetry"]
     assert tel["confidence"] == 0.87 and "short_answer" not in tel and tel["active_adapter"] is None
     assert client.agent.calls[-1]["answer_hint"] == ""
+
+
+def test_polite_request_and_count_take_the_general_path(client):
+    calls = _with_adapter(client)
+    for query in ("Can you describe the land cover in this image?", "How many buildings are there?"):
+        data = _ask(client, query)
+        assert data["answer"] == "A plain answer.", query
+    assert calls == []
 
 
 def test_sar_images_never_use_the_optical_adapter(client):

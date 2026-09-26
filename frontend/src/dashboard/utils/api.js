@@ -94,56 +94,65 @@ export function buildAnalyzeFormData({ query, adapter = 'general', images, histo
   return form;
 }
 
-// `images` is [{ file, modality }] with Image A first. `token`, when given, is sent as a Bearer header
-// so the backend adds this run to the signed-in account's report history (GET /auth/reports); anonymous
-// analysis works exactly the same otherwise. `signal`, when given (an AbortController's), lets the
+// The model endpoints (/analyze, /preview, /report) need the signed-in user's session token, sent as a
+// Bearer header (a missing or expired one is a 401 whose message asks to sign in again).
+const authHeaders = (token) => (token ? { Authorization: `Bearer ${token}` } : undefined);
+
+// An Error fit to show the user, carrying the HTTP status (401 = signed out: the dashboard then re-checks the session).
+async function httpError(response, what) {
+  const err = new Error(await readErrorMessage(response, what));
+  err.status = response.status;
+  return err;
+}
+
+// `images` is [{ file, modality }] with Image A first. The run is added to the signed-in account's report
+// history (GET /auth/reports). `signal`, when given (an AbortController's), lets the
 // caller stop the request; that rejection is an AbortError, passed through as-is rather than turned
 // into the generic "cannot reach the server" message. Resolves to the parsed response, or throws an
 // Error whose message is fit to show the user.
 export async function requestAnalysis({ query, adapter, images, history, token, signal, fetchImpl = fetch, baseUrl = BACKEND_URL }) {
   const body = buildAnalyzeFormData({ query, adapter, images, history });
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
   let response;
   try {
-    response = await fetchImpl(`${baseUrl}/analyze`, { method: 'POST', body, headers, signal });
+    response = await fetchImpl(`${baseUrl}/analyze`, { method: 'POST', body, headers: authHeaders(token), signal });
   } catch (err) {
     if (err?.name === 'AbortError') throw err;
     throw new Error(`Cannot reach the analysis server at ${baseUrl}. Is the backend running?`, { cause: err });
   }
-  if (!response.ok) throw new Error(await readErrorMessage(response));
+  if (!response.ok) throw await httpError(response, 'Analysis');
   return response.json();
 }
 
 // Browsers cannot draw TIFF/GeoTIFF, so the backend renders one to a PNG using the same loader the
 // analysis uses (percentile stretch, SAR despeckle). Resolves to the PNG as a Blob.
-export async function requestPreview({ file, modality = 'optical', fetchImpl = fetch, baseUrl = BACKEND_URL }) {
+export async function requestPreview({ file, modality = 'optical', token, fetchImpl = fetch, baseUrl = BACKEND_URL }) {
   const form = new FormData();
   form.append('image', file);
   form.append('modality', modality);
   let response;
   try {
-    response = await fetchImpl(`${baseUrl}/preview`, { method: 'POST', body: form });
+    response = await fetchImpl(`${baseUrl}/preview`, { method: 'POST', body: form, headers: authHeaders(token) });
   } catch {
     throw new Error(`Cannot reach the server at ${baseUrl} to render a preview.`);
   }
-  if (!response.ok) throw new Error(await readErrorMessage(response, 'Preview'));
+  if (!response.ok) throw await httpError(response, 'Preview');
   return response.blob();
 }
 
 // Rebuild the PDF of one finished run with the whole conversation so far. Resolves to
 // { report_download_url, report_error }.
-export async function requestReport({ sessionId, history = [], mapLink = null, fetchImpl = fetch, baseUrl = BACKEND_URL }) {
+export async function requestReport({ sessionId, history = [], mapLink = null, token, fetchImpl = fetch, baseUrl = BACKEND_URL }) {
   const form = new FormData();
   form.append('session_id', sessionId);
   form.append('chat_history', JSON.stringify(history));
   if (mapLink) form.append('map_link', mapLink);
   let response;
   try {
-    response = await fetchImpl(`${baseUrl}/report`, { method: 'POST', body: form });
+    response = await fetchImpl(`${baseUrl}/report`, { method: 'POST', body: form, headers: authHeaders(token) });
   } catch {
     throw new Error(`Cannot reach the server at ${baseUrl} to build the report.`);
   }
-  if (!response.ok) throw new Error(await readErrorMessage(response, 'Report'));
+  if (!response.ok) throw await httpError(response, 'Report');
   return response.json();
 }
 

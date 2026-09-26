@@ -1,5 +1,4 @@
-import React from 'react';
-import { cx } from './ui';
+import { cx } from './uiHelpers';
 
 const TONE = {
   high: { bar: 'bg-emerald-400', text: 'text-emerald-300' },
@@ -8,11 +7,14 @@ const TONE = {
 };
 
 // One line under an answer: "Confidence 93% · High", a small meter, and where the number comes from.
-// `info` is utils/confidence.confidenceInfo(); nothing is rendered without it.
+// `info` is utils/confidence.confidenceInfo(). Shown ONLY for the VQA adapter's short answers (yes/no,
+// rural/urban), whose calibration was measured on RSVQA-LR. A free-text answer's token probability is ~0.95
+// even when the text is generic, so the badge would nearly always read "High"; that number stays in the
+// trace, data.json and PDF instead.
 export default function ConfidenceBadge({ info, className }) {
-  if (!info) return null;
+  if (!info?.adapted) return null;
   const tone = TONE[info.level];
-  const source = info.adapted ? 'remote-sensing VQA adapter' : 'model certainty';
+  const source = 'remote-sensing VQA adapter';
   return (
     <div className={cx('mt-2 flex items-center gap-2 text-[11px] text-slate-400', className)} title={info.method}>
       <span>

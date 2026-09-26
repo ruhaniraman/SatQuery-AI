@@ -1,20 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { ImageIcon, Loader2 } from 'lucide-react';
+import { cx } from './uiHelpers';
 
 // Shared building blocks. They encode the dashboard's look (dark glass, blue accent, small
 // uppercase labels) once, so every panel stays consistent.
-
-export const cx = (...parts) => parts.filter(Boolean).join(' ');
-
-// When a run finishes its result card is usually below the inputs, out of sight. Scroll it to the top of
-// the panel once per new run (not on every render, so the user can scroll away).
-export function useScrollToNew(key) {
-  const ref = useRef(null);
-  useEffect(() => {
-    if (key) ref.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
-  }, [key]);
-  return ref;
-}
 
 export function Card({ className = '', children, ...rest }) {
   return (
@@ -141,9 +130,9 @@ export function EmptyState({ icon: Icon, title, children, action, className = ''
 // An <img> that degrades gracefully: a file that is not really an image (or a broken URL) shows a
 // placeholder instead of the browser's broken-image icon.
 export function PreviewImage({ src, alt, className, fallback }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [src]);
-  if (failed || !src) {
+  // Remember WHICH src failed, so a new src gets a fresh try without resetting state in an effect.
+  const [failedSrc, setFailedSrc] = useState(null);
+  if (!src || failedSrc === src) {
     return fallback ?? (
       <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-500">
         <ImageIcon size={32} />
@@ -151,7 +140,7 @@ export function PreviewImage({ src, alt, className, fallback }) {
       </div>
     );
   }
-  return <img src={src} alt={alt} className={className} onError={() => setFailed(true)} />;
+  return <img src={src} alt={alt} className={className} onError={() => setFailedSrc(src)} />;
 }
 
 // The model answers as "OBSERVATIONS: ... ASSESSMENT: ..."; give those sections a visible label

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   ArrowRight, Check, Download, FileText, GitCompareArrows, Merge, MessageSquare, RotateCcw, ScanSearch, TriangleAlert,
 } from 'lucide-react';
-import { Button, Card, EmptyState, KeyValue, Label, Notice, PreviewImage, cx } from '../ui';
+import { Button, Card, EmptyState, KeyValue, Label, Notice, PreviewImage } from '../ui';
+import { cx } from '../uiHelpers';
 import { evidenceUrl, formatTelemetryValue, humanizeIdentifier, savePdf } from '../../utils/api';
 import { describeReportChoice, runTime } from '../../utils/runs';
 import AccountReports from '../AccountReports';

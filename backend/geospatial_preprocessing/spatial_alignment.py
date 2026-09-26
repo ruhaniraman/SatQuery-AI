@@ -25,7 +25,7 @@ def _footprint_coverage(ref, src, max_dim: int = 512) -> float:
         step = max(1.0, max(ds.width, ds.height) / max_dim)
         w = max(1, round(ds.width / step))
         h = max(1, round(ds.height / step))
-        return w, h, ds.transform * Affine.scale(ds.width / w, ds.height / h)
+        return w, h, ds.transform @ Affine.scale(ds.width / w, ds.height / h)
 
     dst_w, dst_h, dst_transform = coarse(ref)
     src_w, src_h, src_transform = coarse(src)
