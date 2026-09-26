@@ -6,6 +6,7 @@ import ZoomPan from './ZoomPan';
 import CompareSlider from './CompareSlider';
 import { ACCEPT } from '../constants';
 import { evidenceUrl } from '../utils/api';
+import { useBackendImage } from '../hooks/useBackendImage';
 import { useImageAspect } from '../hooks/useImageAspect';
 
 const Centered = ({ children }) => (
@@ -37,7 +38,7 @@ function SlotBody({ slot }) {
 export default function InputsCanvas({ ws, layer, evidenceRun, targets = [], onFile }) {
   const { slots, focus } = ws;
   const evidence = evidenceUrl(evidenceRun?.data);
-  const aspect = useImageAspect(evidence);
+  const aspect = useImageAspect(useBackendImage(evidence).src);
   const inputRef = useRef(null);
   const pending = useRef(null);
   const [dragging, setDragging] = useState(false);

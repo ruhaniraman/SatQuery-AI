@@ -8,6 +8,7 @@ import { confidenceInfo } from '../utils/confidence';
 import { mapLink } from '../utils/scanResult';
 import { SCANS } from '../constants';
 import { evidenceUrl } from '../utils/api';
+import { loadBackendImage } from '../hooks/useBackendImage';
 import { captureFileName } from '../utils/views';
 
 // Where a captured view can be saved. Fusion's two slots are fixed to one sensor type each, so only the
@@ -78,7 +79,9 @@ export default function MapAsk({ ws, layer = 'optical', layerLabel = null, captu
     }
     setCard({ title: sar ? `${title} (SAR view)` : title, answer: data.answer, confidence: confidenceInfo(data), scan: data.scan || null, link: mapLink({ bounds: shot.bounds }) });
     if (adapter !== 'general' && data.visual_evidence_url) {
-      onOverlay({ url: evidenceUrl(data), bounds: shot.bounds });
+      loadBackendImage(evidenceUrl(data))
+        .then((url) => onOverlay({ url, bounds: shot.bounds }))
+        .catch(() => { /* the answer card is still shown; only the map overlay is missing */ });
     }
   };
 

@@ -1,6 +1,6 @@
 // Talking to the backend's /auth endpoints, plus the client-side form checks. No JSX, no DOM: tested in plain Node.
 // The session token is kept in this browser (localStorage) and sent as a Bearer header.
-import { BACKEND_URL, readErrorMessage } from './api.js';
+import { BACKEND_URL, readErrorMessage, tunnelHeaders } from './api.js';
 
 export const TOKEN_KEY = 'sq-token';
 export const MIN_PASSWORD_LENGTH = 8;
@@ -30,7 +30,7 @@ export class AuthError extends Error {
 }
 
 async function call(path, { method = 'GET', body, token, fetchImpl = fetch, baseUrl = BACKEND_URL } = {}) {
-  const headers = {};
+  const headers = { ...tunnelHeaders(baseUrl) };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;
   let response;
