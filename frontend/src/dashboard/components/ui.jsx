@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ImageIcon, Loader2 } from 'lucide-react';
 import { cx } from './uiHelpers';
+import { useBackendImage } from '../hooks/useBackendImage';
 
 // Shared building blocks. They encode the dashboard's look (dark glass, blue accent, small
 // uppercase labels) once, so every panel stays consistent.
@@ -132,7 +133,15 @@ export function EmptyState({ icon: Icon, title, children, action, className = ''
 export function PreviewImage({ src, alt, className, fallback }) {
   // Remember WHICH src failed, so a new src gets a fresh try without resetting state in an effect.
   const [failedSrc, setFailedSrc] = useState(null);
-  if (!src || failedSrc === src) {
+  const shown = useBackendImage(src);                      // a blob: URL when the backend sits behind a tunnel
+  if (shown.loading) {
+    return (
+      <div className="flex h-full w-full items-center justify-center text-slate-500" aria-busy="true">
+        <Loader2 size={20} className="animate-spin" />
+      </div>
+    );
+  }
+  if (!src || shown.failed || failedSrc === src) {
     return fallback ?? (
       <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-500">
         <ImageIcon size={32} />
@@ -140,7 +149,7 @@ export function PreviewImage({ src, alt, className, fallback }) {
       </div>
     );
   }
-  return <img src={src} alt={alt} className={className} onError={() => setFailedSrc(src)} />;
+  return <img src={shown.src} alt={alt} className={className} onError={() => setFailedSrc(src)} />;
 }
 
 // The model answers as "OBSERVATIONS: ... ASSESSMENT: ..."; give those sections a visible label

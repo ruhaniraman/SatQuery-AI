@@ -2,7 +2,26 @@
 // here runs (and is tested) in plain Node.
 
 // Point the build at another backend with VITE_BACKEND_URL (e.g. in frontend/.env)
-export const BACKEND_URL = import.meta.env?.VITE_BACKEND_URL || 'http://localhost:8000';
+export const BACKEND_URL = (import.meta.env?.VITE_BACKEND_URL || 'http://localhost:8000').replace(/\/+$/, '');
+
+// A backend reached through an ngrok tunnel (the free plan): ngrok answers every browser request with its own
+// "You are about to visit" HTML page unless this header is sent, so every call to such a backend carries it
+// (and its images are fetched with it, see hooks/useBackendImage.js). Other backends get no extra header, so
+// local use does not pay for a CORS preflight.
+export function needsTunnelHeader(url = BACKEND_URL) {
+  try {
+    return /(^|\.)ngrok(-free)?\.(app|dev|io)$/.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+export const tunnelHeaders = (url = BACKEND_URL) => (needsTunnelHeader(url) ? { 'ngrok-skip-browser-warning': '1' } : {});
+
+// Headers for a backend call, or undefined when there are none.
+export function backendHeaders(baseUrl = BACKEND_URL, extra = {}) {
+  const headers = { ...tunnelHeaders(baseUrl), ...extra };
+  return Object.keys(headers).length ? headers : undefined;
+}
 
 // Telemetry values are arbitrary JSON (strings, numbers, booleans, null, lists, objects). React
 // throws on an object child and renders nothing for booleans, so turn everything into text.
@@ -96,7 +115,7 @@ export function buildAnalyzeFormData({ query, adapter = 'general', images, histo
 
 // The model endpoints (/analyze, /preview, /report) need the signed-in user's session token, sent as a
 // Bearer header (a missing or expired one is a 401 whose message asks to sign in again).
-const authHeaders = (token) => (token ? { Authorization: `Bearer ${token}` } : undefined);
+const authHeaders = (token, baseUrl) => backendHeaders(baseUrl, token ? { Authorization: `Bearer ${token}` } : {});
 
 // An Error fit to show the user, carrying the HTTP status (401 = signed out: the dashboard then re-checks the session).
 async function httpError(response, what) {
@@ -114,7 +133,7 @@ export async function requestAnalysis({ query, adapter, images, history, token, 
   const body = buildAnalyzeFormData({ query, adapter, images, history });
   let response;
   try {
-    response = await fetchImpl(`${baseUrl}/analyze`, { method: 'POST', body, headers: authHeaders(token), signal });
+    response = await fetchImpl(`${baseUrl}/analyze`, { method: 'POST', body, headers: authHeaders(token, baseUrl), signal });
   } catch (err) {
     if (err?.name === 'AbortError') throw err;
     throw new Error(`Cannot reach the analysis server at ${baseUrl}. Is the backend running?`, { cause: err });
@@ -131,7 +150,7 @@ export async function requestPreview({ file, modality = 'optical', token, fetchI
   form.append('modality', modality);
   let response;
   try {
-    response = await fetchImpl(`${baseUrl}/preview`, { method: 'POST', body: form, headers: authHeaders(token) });
+    response = await fetchImpl(`${baseUrl}/preview`, { method: 'POST', body: form, headers: authHeaders(token, baseUrl) });
   } catch {
     throw new Error(`Cannot reach the server at ${baseUrl} to render a preview.`);
   }
@@ -148,7 +167,7 @@ export async function requestReport({ sessionId, history = [], mapLink = null, t
   if (mapLink) form.append('map_link', mapLink);
   let response;
   try {
-    response = await fetchImpl(`${baseUrl}/report`, { method: 'POST', body: form, headers: authHeaders(token) });
+    response = await fetchImpl(`${baseUrl}/report`, { method: 'POST', body: form, headers: authHeaders(token, baseUrl) });
   } catch {
     throw new Error(`Cannot reach the server at ${baseUrl} to build the report.`);
   }
@@ -162,7 +181,8 @@ export async function checkHealth({ fetchImpl = fetch, baseUrl = BACKEND_URL, ti
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
-    const response = await fetchImpl(`${baseUrl}/health`, controller ? { signal: controller.signal } : undefined);
+    const init = { headers: backendHeaders(baseUrl), signal: controller?.signal };
+    const response = await fetchImpl(`${baseUrl}/health`, init.headers || init.signal ? init : undefined);
     if (!response.ok) return { state: 'offline', message: `The backend answered HTTP ${response.status}.` };
     const body = await response.json();
     if (body.model_loaded) return { state: 'ready', message: 'Backend and model are ready.' };
@@ -195,7 +215,7 @@ export function formatBytes(bytes) {
 // vs UI :5173), so the PDF would just open in a tab instead of downloading. Falls back to opening it.
 export async function savePdf(url, filename) {
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: backendHeaders(url) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const objectUrl = URL.createObjectURL(await res.blob());
     const link = document.createElement('a');

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   analysisMode, buildAnalyzeFormData, DEFAULT_QUERIES, evidenceUrl, formatBytes, formatErrorDetail,
   formatTelemetryValue, humanizeIdentifier, isTiffFile, readErrorMessage, reportFileName, reportUrl,
-  requestAnalysis, checkHealth, requestPreview, requestReport,
+  requestAnalysis, checkHealth, requestPreview, requestReport, needsTunnelHeader, backendHeaders,
 } from './api.js';
 import { formatLatLng, MAP_CONFIG } from './mapConfig.js';
 
@@ -263,4 +263,34 @@ test('a 401 keeps its status so the dashboard can send the person to sign in', a
   ]) {
     await assert.rejects(call(), (err) => err.status === 401 && /sign in again/.test(err.message));
   }
+});
+
+
+// ------------------------------------------------------------------ ngrok tunnel
+
+test('only an ngrok backend gets the header that skips the ngrok warning page', () => {
+  for (const url of ['https://endpoint-widen-blinked.ngrok-free.dev', 'https://abc.ngrok-free.app/reports/x/evidence.png', 'https://x.ngrok.io']) {
+    assert.equal(needsTunnelHeader(url), true, url);
+  }
+  for (const url of ['http://localhost:8000', 'https://api.example.org', 'https://ngrok-free.dev.evil.com', 'blob:http://localhost/1', 'not a url']) {
+    assert.equal(needsTunnelHeader(url), false, url);
+  }
+  assert.equal(backendHeaders('http://localhost:8000'), undefined);
+  assert.deepEqual(backendHeaders('https://a.ngrok-free.dev', { Authorization: 'Bearer t' }),
+    { 'ngrok-skip-browser-warning': '1', Authorization: 'Bearer t' });
+});
+
+test('every call to an ngrok backend carries the header, signed in or not', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push(init?.headers);
+    return { ok: true, status: 200, json: async () => ({ model_loaded: true }), blob: async () => new Blob(['x']) };
+  };
+  const baseUrl = 'https://a.ngrok-free.dev';
+  await requestAnalysis({ query: 'q', images: [{ file: file('a.png'), modality: 'optical' }], fetchImpl, baseUrl, token: 't' });
+  await requestPreview({ file: file('a.tif'), fetchImpl, baseUrl });
+  await requestReport({ sessionId: 'abc', fetchImpl, baseUrl, token: 't' });
+  await checkHealth({ fetchImpl, baseUrl });
+  assert.equal(seen.length, 4);
+  for (const headers of seen) assert.equal(headers['ngrok-skip-browser-warning'], '1');
 });
