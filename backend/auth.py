@@ -13,7 +13,10 @@ row keyed by email and emails a 6-digit code (send_otp_email, SMTP via env vars 
 row that is never verified expires (OTP_TTL_SECONDS) and is pruned lazily; wrong codes are capped
 (OTP_MAX_ATTEMPTS) and a new one is rate-limited (OTP_RESEND_COOLDOWN_SECONDS).
 
-The analysis endpoints are NOT behind this yet: it gates the dashboard page in the UI, not the model API.
+The model endpoints (/analyze, /preview, /report) require a signed-in user through the `require_user`
+dependency (401 otherwise); env REQUIRE_SIGN_IN=0 switches that off for local development. /health, /auth/* and
+the static /reports files stay open (report folders are unguessable uuid4 names, and <img>/<a> links cannot send
+a bearer header).
 """
 import hashlib
 import hmac
@@ -48,6 +51,11 @@ _GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 OTP_TTL_SECONDS = 10 * 60
 OTP_MAX_ATTEMPTS = 5
 OTP_RESEND_COOLDOWN_SECONDS = 30
+# Password guessing: after LOGIN_MAX_FAILURES wrong logins for one email within LOGIN_WINDOW_SECONDS, that email
+# is refused (429) until the window ends. Counted per email (known or not, so it reveals nothing); a right
+# password clears the count.
+LOGIN_MAX_FAILURES = 5
+LOGIN_WINDOW_SECONDS = 15 * 60
 
 
 def google_client_id() -> str:
@@ -85,7 +93,33 @@ def _connect() -> sqlite3.Connection:
         " query TEXT NOT NULL, task TEXT, created_at REAL NOT NULL, title TEXT)"
     )
     _ensure_column(conn, "reports", "title", "TEXT")   # added after the table already shipped; migrates in place
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS login_failures ("
+        " email TEXT PRIMARY KEY, failures INTEGER NOT NULL, first_at REAL NOT NULL)"
+    )
     return conn
+
+
+def _login_locked(conn: sqlite3.Connection, email: str) -> Optional[int]:
+    """Seconds until this email may try again, or None if it is not locked."""
+    row = conn.execute("SELECT failures, first_at FROM login_failures WHERE email = ?", (email,)).fetchone()
+    if row is None:
+        return None
+    remaining = row["first_at"] + LOGIN_WINDOW_SECONDS - time.time()
+    if remaining <= 0:
+        conn.execute("DELETE FROM login_failures WHERE email = ?", (email,))
+        conn.commit()
+        return None
+    return int(remaining) + 1 if row["failures"] >= LOGIN_MAX_FAILURES else None
+
+
+def _record_login_failure(conn: sqlite3.Connection, email: str) -> None:
+    conn.execute(
+        "INSERT INTO login_failures (email, failures, first_at) VALUES (?, 1, ?)"
+        " ON CONFLICT(email) DO UPDATE SET failures = failures + 1",
+        (email, time.time()),
+    )
+    conn.commit()
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
@@ -224,6 +258,33 @@ def _user_for_token(conn: sqlite3.Connection, token: Optional[str]) -> Optional[
         "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?",
         (_token_hash(token), time.time()),
     ).fetchone()
+
+
+def sign_in_required() -> bool:
+    """On unless env REQUIRE_SIGN_IN is 0/false/no/off (local development, the CLI without an account)."""
+    return os.environ.get("REQUIRE_SIGN_IN", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def require_user(authorization: Optional[str] = Header(default=None)) -> Optional[dict]:
+    """FastAPI dependency for the model endpoints (/analyze, /preview, /report): the signed-in user
+    ({id, email, name}), or 401. Returns None only when sign-in is switched off (REQUIRE_SIGN_IN=0)."""
+    if not sign_in_required():
+        return None
+    with closing(_connect()) as conn:
+        user = _user_for_token(conn, _bearer(authorization))
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Please sign in again: you are not signed in, or your session has expired.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"id": user["id"], "email": user["email"], "name": user["name"]}
+
+
+def user_owns_report(user_id: int, session_id: str) -> bool:
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT 1 FROM reports WHERE session_id = ? AND user_id = ?", (session_id, user_id)).fetchone()
+    return row is not None
 
 
 # ------------------------------------------------------------------ report history
@@ -417,13 +478,23 @@ def resend_otp(body: ResendOtpBody):
 
 @router.post("/login", summary="Log in with an email and password")
 def login(body: LoginBody):
+    email = normalize_email(body.email)
     with closing(_connect()) as conn:
-        user = conn.execute("SELECT * FROM users WHERE email = ?", (normalize_email(body.email),)).fetchone()
+        wait = _login_locked(conn, email)
+        if wait is not None:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many wrong attempts. Try again in {max(1, round(wait / 60))} minute(s).",
+                headers={"Retry-After": str(wait)},
+            )
+        user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         ok = verify_password(body.password, user["password_hash"] if user else None)
         if not user or not ok:
+            _record_login_failure(conn, email)
             if user and not user["password_hash"]:
                 raise HTTPException(status_code=401, detail="This account uses Google. Use “Continue with Google”.")
             raise HTTPException(status_code=401, detail="Wrong email or password.")
+        conn.execute("DELETE FROM login_failures WHERE email = ?", (email,))
         return {"token": _start_session(conn, user["id"]), "user": _public(user)}
 
 

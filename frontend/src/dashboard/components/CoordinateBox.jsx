@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, MapPin, Navigation, Search, X } from 'lucide-react';
 import { interpretSearch, searchPlaces, AUTOSEARCH_DEBOUNCE_MS, AUTOSEARCH_MIN_CHARS } from '../utils/geocode';
 import { COORDINATE_HELP } from '../utils/coordinates';
-import { cx } from './ui';
+import { cx } from './uiHelpers';
 
 // One search box for the live map, at its top right. Type a place ("Chandigarh", "Jharia coalfield") or coordinates
 // (decimal degrees, hemisphere letters, degrees-minutes-seconds: see utils/coordinates.js). Coordinates fly straight

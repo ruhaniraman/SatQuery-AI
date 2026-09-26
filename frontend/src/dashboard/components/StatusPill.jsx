@@ -1,5 +1,5 @@
-import React from 'react';
-import { cx } from './ui';
+import { cx } from './uiHelpers';
+import { describeStatus } from '../utils/status';
 
 // Tailwind needs the class names written out in full.
 const TONES = {
@@ -9,17 +9,6 @@ const TONES = {
   error: { box: 'border-red-800/40 bg-red-950/40 text-red-200', dot: 'bg-red-400' },
   idle: { box: 'border-white/15 bg-white/5 text-slate-300', dot: 'bg-slate-400 animate-pulse' },
 };
-
-// What the header pill says, from the backend's health and whether an analysis is running.
-export function describeStatus(health, executing) {
-  switch (health.state) {
-    case 'offline': return { tone: 'error', text: 'Backend offline' };
-    case 'model-error': return { tone: 'error', text: 'Model unavailable' };
-    case 'loading': return { tone: 'warn', text: 'Model loading' };
-    case 'ready': return executing ? { tone: 'busy', text: 'Analysing' } : { tone: 'ready', text: 'Agent ready' };
-    default: return executing ? { tone: 'busy', text: 'Analysing' } : { tone: 'idle', text: 'Checking' };
-  }
-}
 
 // Clicking re-checks straight away, which is what you want right after starting the backend.
 export default function StatusPill({ health, executing, onRefresh }) {

@@ -38,7 +38,7 @@ def parse_args():
     p.add_argument("--modality", default="optical", choices=["optical", "sar"], help="Sensor type of --image")
     p.add_argument("--modality2", default="optical", choices=["optical", "sar"], help="Sensor type of --image2")
     p.add_argument("--backend", default=DEFAULT_BACKEND, help=f"Backend base URL (default: {DEFAULT_BACKEND})")
-    p.add_argument("--token", help="Bearer token: if given, this run is added to that account's saved report history")
+    p.add_argument("--token", help="Bearer token of a signed-in account (required unless the backend runs with REQUIRE_SIGN_IN=0); the run is added to its report history")
     p.add_argument("--json", action="store_true", help="Print the raw JSON response instead of a formatted summary")
     p.add_argument("--timeout", type=float, default=180.0, help="Request timeout in seconds (model inference can be slow)")
     return p.parse_args()

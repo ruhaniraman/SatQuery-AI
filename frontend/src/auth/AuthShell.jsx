@@ -1,4 +1,3 @@
-import React from 'react';
 import { Link } from 'react-router-dom';
 import earthBg from '../assets/earth.jpeg';
 import logoMark from '../assets/logo-mark.png';

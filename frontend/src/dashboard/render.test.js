@@ -254,12 +254,15 @@ test('AssistantPanel shows the confidence under an answer that has one, and noth
     { role: 'ai', content: 'Answer: Yes\n\nA river crosses the lower half.', confidence: confidenceInfo(trace({ confidence: 0.93, short_answer: 'Yes' })) },
     { role: 'user', content: 'Describe the scene.' },
     { role: 'ai', content: 'Fields and a village.', confidence: null },
+    { role: 'user', content: 'What is going on here?' },
+    { role: 'ai', content: 'A generic paragraph.', confidence: confidenceInfo(trace({ confidence: 0.95 })) },
   ];
   const out = html(h(AssistantPanel, { ws: makeWs({ ...single(), chat }), goTo() {} }));
   assert.match(out, /Confidence <span[^>]*>93%<\/span>/);
   assert.match(out, /High/);
   assert.match(out, /remote-sensing VQA adapter/);
-  assert.equal(out.match(/Confidence <span/g).length, 1, 'only the answer that has a confidence gets the badge');
+  assert.doesNotMatch(out, /95%/, 'a free-text answer gets no badge even when it has a number');
+  assert.equal(out.match(/Confidence <span/g).length, 1, 'only the adapter short answer gets the badge');
 });
 
 test('AssistantPanel keeps two-image results out of the chat (they have their own panels)', async () => {
@@ -305,7 +308,8 @@ test('chat bubbles format assistant answers but leave the user\'s own text alone
 // ------------------------------------------------------------------ scans
 
 test('ScansPanel: three scans, disabled without imagery, latest result with evidence link', async () => {
-  const { default: ScansPanel, SCANS } = await load('/src/dashboard/components/panels/ScansPanel.jsx');
+  const ScansPanel = (await load('/src/dashboard/components/panels/ScansPanel.jsx')).default;
+  const { SCANS } = await load('/src/dashboard/constants.js');
   assert.deepEqual(SCANS.map((s) => s.id), ['mining', 'agriculture', 'deforestation']);
   const empty = html(h(ScansPanel, { ws: makeWs(), goTo() {} }));
   assert.match(empty, /Add an image first/);
@@ -626,7 +630,8 @@ test('ZoomPan starts fitted: zoom-out and fit are disabled, the level is 100%', 
 });
 
 test('StatusPill says what the backend is doing', async () => {
-  const { default: StatusPill, describeStatus } = await load('/src/dashboard/components/StatusPill.jsx');
+  const StatusPill = (await load('/src/dashboard/components/StatusPill.jsx')).default;
+  const { describeStatus } = await load('/src/dashboard/utils/status.js');
   assert.deepEqual(describeStatus({ state: 'ready' }, false), { tone: 'ready', text: 'Agent ready' });
   assert.deepEqual(describeStatus({ state: 'ready' }, true), { tone: 'busy', text: 'Analysing' });
   assert.deepEqual(describeStatus({ state: 'loading' }, false), { tone: 'warn', text: 'Model loading' });
@@ -710,7 +715,7 @@ const mapAskProps = (over = {}) => ({ ws: makeWs(), layer: 'optical', capture() 
 
 test('MapAsk: idle bar has a prompt box, one scan chip per feature scan, and Save view as', async () => {
   const MapAsk = (await load('/src/dashboard/components/MapAsk.jsx')).default;
-  const { SCANS } = await load('/src/dashboard/components/panels/ScansPanel.jsx');
+  const { SCANS } = await load('/src/dashboard/constants.js');
   const out = html(h(MapAsk, mapAskProps()));
   assert.match(out, /aria-label="Ask about this map view"/);
   assert.match(out, /<button[^>]*disabled[^>]*aria-label="Ask about this view"/s, 'send is disabled until something is typed');

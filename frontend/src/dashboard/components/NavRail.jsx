@@ -1,6 +1,6 @@
 import React from 'react';
 import { Loader2 } from 'lucide-react';
-import { cx } from './ui';
+import { cx } from './uiHelpers';
 import { GROUP_LABELS } from '../features';
 
 // Vertical feature navigation (a row on narrow screens). Built entirely from the feature registry; a

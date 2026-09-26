@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import { Globe, ImageIcon, Loader2 } from 'lucide-react';
 import { Segmented } from './ui';
 import InputsCanvas from './InputsCanvas';

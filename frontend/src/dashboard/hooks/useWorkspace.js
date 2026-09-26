@@ -31,7 +31,10 @@ const forSingleImageModel = (chat) => chat.filter((entry) => entry.scope !== 'pa
 
 // Everything the panels share: the image slots, the conversation, the analysis runs and the viewer
 // state. Panels stay presentational; this is the only place that talks to the API.
-export function useWorkspace() {
+// `onSessionExpired` is called when a model endpoint answers 401 (signed out or session expired elsewhere); the
+// Dashboard passes the auth context's recheck, which sends the person to the sign-in page.
+export function useWorkspace({ onSessionExpired } = {}) {
+  const noteAuthError = useCallback((err) => { if (err?.status === 401) onSessionExpired?.(); }, [onSessionExpired]);
   const [slots, setSlots] = useState(initialSlots);
 
   // Viewer: the live map is the default; the inputs view shows the user's images and the evidence.
@@ -62,16 +65,17 @@ export function useWorkspace() {
     const token = tokens.current[id];
     patchSlot(id, { previewState: 'loading', previewError: null });
     try {
-      const url = URL.createObjectURL(await requestPreview({ file, modality }));
+      const url = URL.createObjectURL(await requestPreview({ file, modality, token: readToken() }));
       if (tokens.current[id] !== token) { revoke(url); return; }         // replaced while rendering
       revoke(previews.current[id]);
       previews.current[id] = url;
       patchSlot(id, { preview: url, previewState: 'ready' });
     } catch (err) {
+      noteAuthError(err);
       if (tokens.current[id] !== token) return;
       patchSlot(id, { preview: null, previewState: 'failed', previewError: err.message });
     }
-  }, [patchSlot]);
+  }, [patchSlot, noteAuthError]);
 
   const setImage = useCallback((id, file, { reveal = true, modality, meta = null } = {}) => {
     if (!file) return;
@@ -153,6 +157,7 @@ export function useWorkspace() {
       }
       return { data, run };
     } catch (err) {
+      noteAuthError(err);
       const message = err?.name === 'AbortError' ? 'Response was interrupted.' : err.message;
       setError({ message, scope: errorScope });
       return null;
@@ -161,7 +166,7 @@ export function useWorkspace() {
       setIsExecuting(false);
       setBusy(null);
     }
-  }, [isExecuting]);
+  }, [isExecuting, noteAuthError]);
 
   const needImage = (id, scope, message) => {
     if (slots[id].file) return true;
@@ -244,15 +249,16 @@ export function useWorkspace() {
     if (!reportRun) return { url: null, filename: null, error: 'Run an analysis first.' };
     const filename = reportFileName(reportRun.data);
     try {
-      const out = await requestReport({ sessionId: reportRun.sessionId, history: chat, mapLink: mapLink(reportRun.meta), baseUrl: base });
+      const out = await requestReport({ sessionId: reportRun.sessionId, history: chat, mapLink: mapLink(reportRun.meta), token: readToken(), baseUrl: base });
       if (out.report_download_url) return { url: `${base}${out.report_download_url}`, filename, error: null };
       throw new Error(out.report_error || 'The report could not be built.');
     } catch (err) {
+      noteAuthError(err);
       const own = reportRun.data?.report_download_url;
       if (own) return { url: `${base}${own}`, filename, error: null, fallback: err.message };
       return { url: null, filename, error: err.message };
     }
-  }, [reportRun, chat]);
+  }, [reportRun, chat, noteAuthError]);
 
   const latest = useMemo(() => ({
     scan: latestRun(runs, ['scan']),

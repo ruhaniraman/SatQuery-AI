@@ -1,6 +1,6 @@
-import React from 'react';
 import { CircleCheck, TriangleAlert } from 'lucide-react';
-import { FormattedAnswer, Notice, cx } from './ui';
+import { FormattedAnswer, Notice } from './ui';
+import { cx } from './uiHelpers';
 import { parseChangeAnswer } from '../utils/changeAnswer';
 
 // Tailwind needs the class names written out in full.

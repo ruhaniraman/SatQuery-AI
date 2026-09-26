@@ -1,4 +1,3 @@
-import React from 'react';
 import ImageSlot from '../ImageSlot';
 
 // The single image that the Assistant and the Feature scans work on. Two-image work (change detection,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PanelLeftClose } from 'lucide-react';
 import earthBg from './assets/earth.jpeg';
@@ -13,11 +13,13 @@ import ThemeToggle from './dashboard/components/ThemeToggle';
 import StatusPill from './dashboard/components/StatusPill';
 import UserMenu from './dashboard/components/UserMenu';
 import { readTheme, saveTheme } from './dashboard/utils/theme';
+import { useAuth } from './auth/authState';
 
 // Layout: header, then [feature nav] [active feature's panel] [viewer]. The viewer shows the live
 // satellite map by default and can be switched to the open feature's images and analysis evidence.
 export default function Dashboard() {
-  const ws = useWorkspace();
+  const { recheck } = useAuth();
+  const ws = useWorkspace({ onSessionExpired: recheck });
   const health = useBackendStatus();
   const [featureId, setFeatureId] = useState('imagery');
   const [panelOpen, setPanelOpen] = useState(true);

@@ -78,6 +78,35 @@ def test_login_right_and_wrong(api, sent):
     assert bad.json()["detail"] == unknown.json()["detail"]               # does not reveal which emails exist
 
 
+def _login(api, password, email="ada@example.com"):
+    return api.post("/auth/login", json={"email": email, "password": password})
+
+
+def test_repeated_wrong_passwords_lock_the_email(api, sent, monkeypatch):
+    signup(api, sent)
+    for _ in range(auth.LOGIN_MAX_FAILURES):
+        assert _login(api, "wrong password").status_code == 401
+    locked = _login(api, "correct horse")                                  # even the right password waits
+    assert locked.status_code == 429 and int(locked.headers["Retry-After"]) > 0
+    # Unknown emails lock the same way, so the lock reveals nothing.
+    for _ in range(auth.LOGIN_MAX_FAILURES):
+        _login(api, "x" * 8, email="nobody@example.com")
+    assert _login(api, "x" * 8, email="nobody@example.com").status_code == 429
+    # Once the window has passed, the right password works again.
+    later = auth.time.time() + auth.LOGIN_WINDOW_SECONDS + 1
+    monkeypatch.setattr(auth.time, "time", lambda: later)
+    assert _login(api, "correct horse").status_code == 200
+
+
+def test_a_right_password_clears_earlier_failures(api, sent):
+    signup(api, sent)
+    for _ in range(auth.LOGIN_MAX_FAILURES - 1):
+        _login(api, "wrong password")
+    assert _login(api, "correct horse").status_code == 200
+    for _ in range(auth.LOGIN_MAX_FAILURES - 1):
+        assert _login(api, "wrong password").status_code == 401            # the count started again
+
+
 def test_me_without_or_with_a_bad_token(api):
     assert api.get("/auth/me").status_code == 401
     assert api.get("/auth/me", headers={"Authorization": "Bearer nonsense"}).status_code == 401

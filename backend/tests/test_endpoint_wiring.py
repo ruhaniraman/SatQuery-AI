@@ -57,6 +57,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)                            # reports/ and temp_* land here
     monkeypatch.setenv("DESCRIBE_FIRST", "0")              # tests that want the extra caption calls turn it on
     monkeypatch.setenv("CHANGE_EVIDENCE_REPORT", "0")      # ... and the evidence-built comparison likewise
+    monkeypatch.setenv("REQUIRE_SIGN_IN", "0")             # test_sign_in_required.py turns the gate back on
 
     import main_api
     real_vlm = main_api.shared_vram_caller           # kept so a test can exercise the real bridge
@@ -207,6 +208,15 @@ def test_chat_history_reaches_the_agent(client):
              query="and north?", chat_history=json.dumps(hist))
     assert r.status_code == 200, r.text
     assert client.agent.calls[0]["chat_history"][:2] == hist[:2]
+
+
+def test_unreadable_chat_history_is_ignored_and_said_so(client):
+    import json
+    img = [("images", ("a.png", png_bytes(np.full((64, 64, 3), 90, np.uint8)), "image/png"))]
+    for bad in ("{oops", json.dumps({"not": "a list"})):
+        r = post(client, img, query="what is here?", chat_history=bad)
+        assert r.status_code == 200, r.text
+        assert any("chat history" in w for w in r.json()["agent_execution_trace"]["warnings"]), bad
 
 
 def test_fusion_trace_and_system_prompt_are_honest(client):

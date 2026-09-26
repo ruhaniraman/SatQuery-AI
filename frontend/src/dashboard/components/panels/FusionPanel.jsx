@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { CircleAlert, Eye, Play } from 'lucide-react';
-import { Button, Card, FormattedAnswer, Label, Notice, useScrollToNew } from '../ui';
+import { Button, Card, FormattedAnswer, Label, Notice } from '../ui';
+import { useScrollToNew } from '../uiHelpers';
 import ImageSlot from '../ImageSlot';
 import { runTime } from '../../utils/runs';
 
